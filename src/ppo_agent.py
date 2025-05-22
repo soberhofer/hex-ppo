@@ -21,7 +21,8 @@ class PPOAgent:
 
     def select_action(self, observation, valid_actions):
         with torch.no_grad():
-            obs_tensor = torch.FloatTensor(observation).unsqueeze(0).to(self.device) # Add batch dimension and move to device
+            # Add batch and channel dimensions, then move to device
+            obs_tensor = torch.FloatTensor(observation).unsqueeze(0).unsqueeze(1).to(self.device) 
             action_logits, value = self.policy_old(obs_tensor)
             
             # Mask invalid actions
@@ -39,8 +40,8 @@ class PPOAgent:
         return action.item(), action_log_prob.item(), value.item()
 
     def update(self, memory):
-        # Convert lists to tensors and move to device
-        old_states = torch.stack(memory.states).float().to(self.device)
+        # Convert lists to tensors, add channel dimension, and move to device
+        old_states = torch.stack(memory.states).float().unsqueeze(1).to(self.device)
         old_actions = torch.stack(memory.actions).long().to(self.device)
         old_logprobs = torch.stack(memory.logprobs).float().to(self.device)
         old_rewards = torch.stack(memory.rewards).float().to(self.device)
@@ -68,9 +69,11 @@ class PPOAgent:
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-
+        
         # Copy new weights into old policy
         self.policy_old.load_state_dict(self.policy.state_dict())
+
+        return policy_loss.item(), value_loss.item(), dist_entropy.item()
 
     def _calculate_advantages(self, rewards, is_terminals, states):
         # Calculate discounted rewards (returns)
