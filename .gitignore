@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+.Python
+build/
+dist/
+*.egg-info/
+.env
+venv/
+.venv/
+env/
+.conda/
+
+# IDEs
+.vscode/
+.idea/
+
+# Operating System
+.DS_Store
+
+# Trained models
+models/
+
+# Logs and other temporary files
+*.log
+*.tmp
