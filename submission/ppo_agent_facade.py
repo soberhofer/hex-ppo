@@ -3,6 +3,7 @@ import numpy as np
 import os
 from hex_engine import hexPosition # For scalar_to_coordinates
 from src.ppo_model import ActorCritic # Assuming src is in PYTHONPATH or accessible
+from torch.distributions import Categorical # Import Categorical
 
 # Define the board size (must match the size used during training)
 HEX_BOARD_SIZE = 7 

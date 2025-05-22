@@ -27,8 +27,9 @@ class ActorCritic(nn.Module):
         self.critic_fc2 = nn.Linear(256, 1)
 
     def forward(self, obs):
-        # Add a channel dimension for Conv2d (batch_size, 1, board_size, board_size)
-        obs = obs.float().unsqueeze(1) 
+        # obs is expected to be (batch_size, 1, board_size, board_size)
+        # Ensure it's float
+        obs = obs.float()
         
         x = F.relu(self.conv1(obs))
         x = F.relu(self.conv2(x))
