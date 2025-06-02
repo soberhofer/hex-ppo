@@ -64,7 +64,7 @@ class PPOAgent:
             policy_loss = -torch.min(surr1, surr2).mean()
             value_loss = self.MseLoss(state_values.squeeze(), old_rewards) # Assuming old_rewards are already returns
 
-            loss = policy_loss + 0.5 * value_loss - 0.01 * dist_entropy # Add entropy bonus
+            loss = policy_loss + 0.5 * value_loss - 0.001 * dist_entropy # Reduced entropy bonus
 
             self.optimizer.zero_grad()
             loss.backward()
