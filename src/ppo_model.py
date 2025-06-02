@@ -14,6 +14,9 @@ class ActorCritic(nn.Module):
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
         
+        # 1x1 Convolution for the residual connection to match channel dimensions
+        self.residual_projection = nn.Conv2d(1, 64, kernel_size=1, stride=1, padding=0)
+
         # Calculate the output size of the convolutional layers
         # The size remains the same due to padding=1 and stride=1
         conv_output_size = 64 * board_size * board_size
@@ -29,10 +32,16 @@ class ActorCritic(nn.Module):
     def forward(self, obs):
         # obs is expected to be (batch_size, 1, board_size, board_size)
         # Ensure it's float
-        obs = obs.float()
+        obs_float = obs.float() # Use a different variable name to keep original obs for residual
         
-        x = F.relu(self.conv1(obs))
+        # Main path
+        x = F.relu(self.conv1(obs_float))
         x = F.relu(self.conv2(x))
+        
+        # Residual connection
+        residual = self.residual_projection(obs_float)
+        x = x + residual
+        x = F.relu(x) # Apply ReLU after adding residual
         
         # Flatten the output for the fully connected layers
         x = x.view(x.size(0), -1) # Flatten all dimensions except batch
