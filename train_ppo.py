@@ -11,9 +11,9 @@ import random # For random agent in evaluation
 
 # Hyperparameters
 HEX_BOARD_SIZE = 7
-INITIAL_LEARNING_RATE = 0.0003 # Renamed for clarity with scheduler
+INITIAL_LEARNING_RATE = 0.001 # Increased initial LR
 GAMMA = 0.99
-K_EPOCHS = 4
+K_EPOCHS = 10 # Increased K_EPOCHS
 EPS_CLIP = 0.2
 GAE_LAMBDA = 0.95
 NUM_EPISODES = 100000 # Number of episodes to train
