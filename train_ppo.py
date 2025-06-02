@@ -4,21 +4,22 @@ from src.hex_env import HexEnv
 from src.ppo_agent import PPOAgent, RolloutMemory
 from src.ppo_model import ActorCritic # For evaluation
 from hex_engine import hexPosition # For evaluation
+from torch.optim.lr_scheduler import StepLR # Import StepLR
 import numpy as np
 import os
 import random # For random agent in evaluation
 
 # Hyperparameters
 HEX_BOARD_SIZE = 7
-LEARNING_RATE = 0.0003
+INITIAL_LEARNING_RATE = 0.0003 # Renamed for clarity with scheduler
 GAMMA = 0.99
 K_EPOCHS = 4
 EPS_CLIP = 0.2
 GAE_LAMBDA = 0.95
-NUM_EPISODES = 10000 # Number of episodes to train
-SAVE_INTERVAL = 100 # Save model every X episodes
-EVAL_INTERVAL = 500 # Evaluate model every X episodes
-NUM_EVAL_GAMES = 20 # Number of games for periodic evaluation
+NUM_EPISODES = 100000 # Number of episodes to train
+SAVE_INTERVAL = 5000 # Save model every X episodes
+EVAL_INTERVAL = 1000 # Evaluate model every X episodes
+NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
 
 # --- Random Agent for Evaluation ---
@@ -104,7 +105,8 @@ def train():
     else:
         device = torch.device("cpu")
         print("Using CPU device for training.")
-
+    device = torch.device("cpu")  # User requested to keep forced CPU
+    print(f"Training will run on: {device}")
     # Create environment
     env = HexEnv(size=HEX_BOARD_SIZE)
     
@@ -113,8 +115,12 @@ def train():
     action_space_size = env.action_space.n
 
     # Initialize PPO agent and memory, passing the device
-    agent = PPOAgent(obs_shape, action_space_size, LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device)
+    agent = PPOAgent(obs_shape, action_space_size, INITIAL_LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device)
     memory = RolloutMemory()
+
+    # Initialize LR scheduler
+    # Example: Decay LR by a factor of 0.9 every 1000 episodes
+    lr_scheduler = StepLR(agent.optimizer, step_size=1000, gamma=0.9)
 
     # Create directory for saving models
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -151,18 +157,22 @@ def train():
                 current_episode_entropies.append(ent)
                 memory.clear_memory()
         
+        # This block was duplicated, keeping one instance
         if current_episode_policy_losses: # if update was called
             policy_losses.append(np.mean(current_episode_policy_losses))
             value_losses.append(np.mean(current_episode_value_losses))
             entropies.append(np.mean(current_episode_entropies))
 
         if i_episode % 100 == 0:
-            print(f"Episode {i_episode}, Reward: {episode_reward}", end="")
-            if policy_losses: # Print losses if available
+            current_lr = agent.optimizer.param_groups[0]['lr']
+            print(f"Episode {i_episode}, Reward: {episode_reward}, LR: {current_lr:.6f}", end="")
+            if policy_losses and i_episode > 0: # Print losses if available and not the first log
                 print(f", Avg Policy Loss: {policy_losses[-1]:.4f}, Avg Value Loss: {value_losses[-1]:.4f}, Avg Entropy: {entropies[-1]:.4f}")
             else:
                 print()
-
+        
+        # Step the LR scheduler
+        lr_scheduler.step()
 
         # Save model
         if i_episode % SAVE_INTERVAL == 0:
