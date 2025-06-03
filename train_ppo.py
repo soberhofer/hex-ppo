@@ -8,17 +8,24 @@ from torch.optim.lr_scheduler import StepLR # Import StepLR
 import numpy as np
 import os
 import random # For random agent in evaluation
+import time
 
 # Hyperparameters
 HEX_BOARD_SIZE = 7
-INITIAL_LEARNING_RATE = 0.001 # Increased initial LR
+INITIAL_LEARNING_RATE = 0.001 
 GAMMA = 0.99
-K_EPOCHS = 10 # Increased K_EPOCHS
+K_EPOCHS = 10 
 EPS_CLIP = 0.2
-GAE_LAMBDA = 0.95
-NUM_EPISODES = 100000 # Number of episodes to train
-SAVE_INTERVAL = 5000 # Save model every X episodes
-EVAL_INTERVAL = 1000 # Evaluate model every X episodes
+GAE_LAMBDA = 0.95 # Currently not used in advantage calculation, but kept for completeness
+
+MAX_TOTAL_TIMESTEPS = 200000  # Total timesteps to train for
+TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
+UPDATES_PER_EVAL = 50        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
+UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2048 steps/update = ~500k steps)
+# LR Scheduler: step_size is now in terms of number of updates
+LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
+LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
+
 NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
 
@@ -27,79 +34,64 @@ def random_agent_eval(board, action_set):
     return random.choice(action_set)
 
 # --- Evaluation Function (integrated) ---
-def evaluate_against_random(ppo_policy, device, num_games=NUM_EVAL_GAMES):
+def evaluate_against_random(ppo_policy_net, device, num_games=NUM_EVAL_GAMES): # Renamed ppo_policy to ppo_policy_net for clarity
     print(f"\n--- Evaluating PPO Agent vs Random Agent for {num_games} games ---")
     ppo_wins = 0
     game_engine = hexPosition(size=HEX_BOARD_SIZE)
-    
-    # Ensure ppo_policy is in eval mode
-    ppo_policy.eval()
+    ppo_policy_net.eval() # Ensure ppo_policy_net is in eval mode
 
     for i in range(num_games):
         game_engine.reset()
-        
         # PPO agent always plays, alternates starting position
+        # Player1 is White, Player2 is Black
         if i % 2 == 0:
-            player1 = ppo_policy # PPO is White
-            player2 = random_agent_eval # Random is Black
-            ppo_is_white = True
+            # PPO is White
+            current_player1_policy = ppo_policy_net
+            current_player2_policy = random_agent_eval
+            ppo_plays_as_player = 1 # PPO is player 1 (White)
         else:
-            player1 = random_agent_eval # Random is White
-            player2 = ppo_policy # PPO is Black
-            ppo_is_white = False
+            # PPO is Black
+            current_player1_policy = random_agent_eval
+            current_player2_policy = ppo_policy_net
+            ppo_plays_as_player = -1 # PPO is player -1 (Black)
 
         while game_engine.winner == 0:
-            current_board_state = torch.FloatTensor(game_engine.board).unsqueeze(0).unsqueeze(1).to(device)
+            current_board_for_nn = torch.FloatTensor(game_engine.board).unsqueeze(0).unsqueeze(1).to(device)
             
             if game_engine.player == 1: # White's turn
-                if player1 == ppo_policy:
+                if current_player1_policy == ppo_policy_net:
                     with torch.no_grad():
-                        action_logits, _ = player1(current_board_state)
-                        mask = torch.full(action_logits.shape, -float('inf'), device=device)
-                        valid_actions_scalar = [game_engine.coordinate_to_scalar(a) for a in game_engine.get_action_space()]
-                        for act_s in valid_actions_scalar: mask[0, act_s] = 0
-                        masked_action_logits = action_logits + mask
-                        probs = torch.nn.functional.softmax(masked_action_logits, dim=-1)
-                        dist = torch.distributions.Categorical(probs)
-                        action_scalar = dist.sample().item()
-                    action = game_engine.scalar_to_coordinates(action_scalar)
+                        # Use the act method of the ActorCritic model instance
+                        action_scalar, _, _ = current_player1_policy.act(current_board_for_nn) 
+                    action_coords = game_engine.scalar_to_coordinates(action_scalar)
                 else: # Random agent
-                    action = player1(game_engine.board, game_engine.get_action_space())
-            else: # Black's turn
-                if player2 == ppo_policy:
+                    action_coords = current_player1_policy(game_engine.board, game_engine.get_action_space())
+            else: # Black's turn (player == -1)
+                if current_player2_policy == ppo_policy_net:
                     with torch.no_grad():
-                        action_logits, _ = player2(current_board_state)
-                        mask = torch.full(action_logits.shape, -float('inf'), device=device)
-                        valid_actions_scalar = [game_engine.coordinate_to_scalar(a) for a in game_engine.get_action_space()]
-                        for act_s in valid_actions_scalar: mask[0, act_s] = 0
-                        masked_action_logits = action_logits + mask
-                        probs = torch.nn.functional.softmax(masked_action_logits, dim=-1)
-                        dist = torch.distributions.Categorical(probs)
-                        action_scalar = dist.sample().item()
-                    action = game_engine.scalar_to_coordinates(action_scalar)
+                        action_scalar, _, _ = current_player2_policy.act(current_board_for_nn)
+                    action_coords = game_engine.scalar_to_coordinates(action_scalar)
                 else: # Random agent
-                    action = player2(game_engine.board, game_engine.get_action_space())
+                    action_coords = current_player2_policy(game_engine.board, game_engine.get_action_space())
             
-            game_engine.move(action)
+            game_engine.move(action_coords)
             game_engine.evaluate()
 
-        if (game_engine.winner == 1 and ppo_is_white) or \
-           (game_engine.winner == -1 and not ppo_is_white):
+        # Check if PPO won
+        if game_engine.winner == ppo_plays_as_player:
             ppo_wins += 1
             
     win_rate = (ppo_wins / num_games) * 100
     print(f"PPO Agent win rate vs Random: {win_rate:.2f}% ({ppo_wins}/{num_games})")
     print("--- Evaluation Finished ---")
-    # Set policy back to train mode if it was changed
-    ppo_policy.train()
+    ppo_policy_net.train() # Set policy back to train mode
     return win_rate
 
 def train():
-    # Determine the device to use (CUDA if available, else MPS if available, else CPU)
     if torch.cuda.is_available():
         device = torch.device("cuda")
         print("Using CUDA device for training.")
-    elif torch.backends.mps.is_available():
+    elif torch.backends.mps.is_available(): # Check for MPS
         device = torch.device("mps")
         print("Using MPS device for training.")
     else:
@@ -107,88 +99,88 @@ def train():
         print("Using CPU device for training.")
     device = torch.device("cpu")  # User requested to keep forced CPU
     print(f"Training will run on: {device}")
-    # Create environment
+
     env = HexEnv(size=HEX_BOARD_SIZE)
-    
-    # Get observation and action space sizes
     obs_shape = env.observation_space.shape
     action_space_size = env.action_space.n
 
-    # Initialize PPO agent and memory, passing the device
     agent = PPOAgent(obs_shape, action_space_size, INITIAL_LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device)
     memory = RolloutMemory()
+    lr_scheduler = StepLR(agent.optimizer, step_size=LR_SCHEDULER_STEP_SIZE, gamma=LR_SCHEDULER_GAMMA)
 
-    # Initialize LR scheduler
-    # Example: Decay LR by a factor of 0.9 every 1000 episodes
-    lr_scheduler = StepLR(agent.optimizer, step_size=1000, gamma=0.9)
-
-    # Create directory for saving models
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    # Lists to store losses and evaluation results
-    policy_losses, value_losses, entropies = [], [], []
-    eval_win_rates = []
+    print(f"Starting PPO training for Hex for {MAX_TOTAL_TIMESTEPS} timesteps...")
+    print(f"Batch size: {TIMESTEPS_PER_BATCH}, Updates per batch: {K_EPOCHS}")
 
-    print("Starting PPO training for Hex...")
-    for i_episode in range(1, NUM_EPISODES + 1):
-        state, info = env.reset()
-        done = False
-        truncated = False
-        episode_reward = 0
-        current_episode_policy_losses, current_episode_value_losses, current_episode_entropies = [], [], []
+    total_timesteps_collected = 0
+    num_updates = 0
+    
+    all_episode_rewards = [] # To store rewards of all completed episodes for averaging
 
-        while not done and not truncated:
+    state, info = env.reset()
+    current_episode_reward_accumulator = 0.0 # Accumulates reward for the current episode
+
+    while total_timesteps_collected < MAX_TOTAL_TIMESTEPS:
+        # Collect TIMESTEPS_PER_BATCH
+        for _ in range(TIMESTEPS_PER_BATCH):
             valid_actions = info["valid_actions"]
-            action, log_prob, value = agent.select_action(state, valid_actions)
+            action_scalar, log_prob, _ = agent.select_action(state, valid_actions) 
             
-            next_state, reward, done, truncated, info = env.step(action)
+            next_state, step_reward, done, truncated, next_info = env.step(action_scalar)
 
-            # Store in memory
-            memory.add(state, action, log_prob, reward, done) 
-
+            memory.add(state, action_scalar, log_prob, step_reward, done or truncated)
+            current_episode_reward_accumulator += step_reward
+            
             state = next_state
-            episode_reward += reward
+            info = next_info
+            total_timesteps_collected += 1
 
-            # If game is done, update agent
             if done or truncated:
-                p_loss, v_loss, ent = agent.update(memory)
-                current_episode_policy_losses.append(p_loss)
-                current_episode_value_losses.append(v_loss)
-                current_episode_entropies.append(ent)
-                memory.clear_memory()
+                all_episode_rewards.append(current_episode_reward_accumulator)
+                current_episode_reward_accumulator = 0.0 # Reset for next episode
+                state, info = env.reset()
+            
+            if total_timesteps_collected >= MAX_TOTAL_TIMESTEPS:
+                break
         
-        # This block was duplicated, keeping one instance
-        if current_episode_policy_losses: # if update was called
-            policy_losses.append(np.mean(current_episode_policy_losses))
-            value_losses.append(np.mean(current_episode_value_losses))
-            entropies.append(np.mean(current_episode_entropies))
+        # Batch is full (or training is ending), update the agent
+        if len(memory.states) > 0: # Ensure memory is not empty if MAX_TOTAL_TIMESTEPS is not multiple of TIMESTEPS_PER_BATCH
+            p_loss, v_loss, ent = agent.update(memory)
+            memory.clear_memory()
+            num_updates += 1
+            lr_scheduler.step() 
 
-        if i_episode % 100 == 0:
-            current_lr = agent.optimizer.param_groups[0]['lr']
-            print(f"Episode {i_episode}, Reward: {episode_reward}, LR: {current_lr:.6f}", end="")
-            if policy_losses and i_episode > 0: # Print losses if available and not the first log
-                print(f", Avg Policy Loss: {policy_losses[-1]:.4f}, Avg Value Loss: {value_losses[-1]:.4f}, Avg Entropy: {entropies[-1]:.4f}")
-            else:
-                print()
+            # Logging
+            if num_updates % 10 == 0: # Log losses every 10 updates
+                current_lr = agent.optimizer.param_groups[0]['lr']
+                avg_ep_reward_str = ""
+                # Log average reward of episodes completed in the last ~TIMESTEPS_PER_BATCH steps
+                # This is an approximation. For more precise per-batch episode rewards,
+                # one would need to track episodes ending within the batch collection.
+                # For now, using the last N episodes from all_episode_rewards.
+                if len(all_episode_rewards) > 0:
+                    # Log average of last, say, 50 episodes if available, or all if fewer
+                    lookback_episodes = min(50, len(all_episode_rewards))
+                    avg_recent_ep_reward = np.mean(all_episode_rewards[-lookback_episodes:])
+                    avg_ep_reward_str = f", Avg Ep Reward (last ~{lookback_episodes}): {avg_recent_ep_reward:.2f}"
+
+                print(f"Update {num_updates}, Timesteps: {total_timesteps_collected}, LR: {current_lr:.7f}{avg_ep_reward_str}")
+                print(f"  Losses: Policy: {p_loss:.4f}, Value: {v_loss:.4f}, Entropy: {ent:.4f}")
+
+            if num_updates > 0 and num_updates % UPDATES_PER_EVAL == 0:
+                evaluate_against_random(agent.policy, device, NUM_EVAL_GAMES)
+
+            if num_updates > 0 and num_updates % UPDATES_PER_SAVE == 0:
+                model_path = os.path.join(MODEL_DIR, f"ppo_hex_agent_update_{num_updates}_steps_{total_timesteps_collected}.pth")
+                torch.save(agent.policy.state_dict(), model_path)
+                print(f"Model saved to {model_path}")
         
-        # Step the LR scheduler
-        lr_scheduler.step()
-
-        # Save model
-        if i_episode % SAVE_INTERVAL == 0:
-            model_path = os.path.join(MODEL_DIR, f"ppo_hex_agent_episode_{i_episode}.pth")
-            torch.save(agent.policy.state_dict(), model_path)
-            print(f"Model saved to {model_path}")
-
-        # Periodic evaluation
-        if i_episode % EVAL_INTERVAL == 0:
-            win_rate = evaluate_against_random(agent.policy, device, NUM_EVAL_GAMES)
-            eval_win_rates.append(win_rate)
-            # Here you could also save eval_win_rates to a file for plotting
+        if total_timesteps_collected >= MAX_TOTAL_TIMESTEPS:
+            break
 
     env.close()
     print("Training finished.")
-    # You can print or plot policy_losses, value_losses, entropies, eval_win_rates here
 
 if __name__ == '__main__':
     train()
