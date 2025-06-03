@@ -34,7 +34,7 @@ def random_agent_eval(board, action_set):
     return random.choice(action_set)
 
 # --- Evaluation Function (integrated) ---
-def evaluate_against_random(ppo_policy_net, device, num_games=NUM_EVAL_GAMES): # Renamed ppo_policy to ppo_policy_net for clarity
+def evaluate_against_random(ppo_policy_net, device, num_games=NUM_EVAL_GAMES):
     print(f"\n--- Evaluating PPO Agent vs Random Agent for {num_games} games ---")
     ppo_wins = 0
     game_engine = hexPosition(size=HEX_BOARD_SIZE)
@@ -42,42 +42,54 @@ def evaluate_against_random(ppo_policy_net, device, num_games=NUM_EVAL_GAMES): #
 
     for i in range(num_games):
         game_engine.reset()
-        # PPO agent always plays, alternates starting position
-        # Player1 is White, Player2 is Black
         if i % 2 == 0:
-            # PPO is White
-            current_player1_policy = ppo_policy_net
-            current_player2_policy = random_agent_eval
+            current_player1_is_ppo = True
             ppo_plays_as_player = 1 # PPO is player 1 (White)
         else:
-            # PPO is Black
-            current_player1_policy = random_agent_eval
-            current_player2_policy = ppo_policy_net
+            current_player1_is_ppo = False
             ppo_plays_as_player = -1 # PPO is player -1 (Black)
 
         while game_engine.winner == 0:
             current_board_for_nn = torch.FloatTensor(game_engine.board).unsqueeze(0).unsqueeze(1).to(device)
+            action_coords = None
+
+            is_ppo_turn_now = (game_engine.player == 1 and current_player1_is_ppo) or \
+                              (game_engine.player == -1 and not current_player1_is_ppo)
+
+            if is_ppo_turn_now:
+                with torch.no_grad():
+                    action_logits, _ = ppo_policy_net(current_board_for_nn) # Get logits from model.forward()
+                    
+                    valid_actions_tuples = game_engine.get_action_space()
+                    valid_actions_scalar = [game_engine.coordinate_to_scalar(a) for a in valid_actions_tuples]
+
+                    mask = torch.full(action_logits.shape, -float('inf'), device=device)
+                    if valid_actions_scalar: # Ensure there are valid actions
+                        mask[0, valid_actions_scalar] = 0
+                    
+                    masked_action_logits = action_logits + mask
+                    probs = torch.nn.functional.softmax(masked_action_logits, dim=-1)
+                    
+                    # Check for NaN in probs, can happen if all logits are -inf (no valid moves, though env should prevent this)
+                    if torch.isnan(probs).any():
+                        # Fallback to random action if probs are NaN (should ideally not happen if valid_actions is managed well)
+                        print("Warning: NaN in probabilities during evaluation, choosing random action.")
+                        chosen_action_tuple = random.choice(valid_actions_tuples)
+                        action_coords = chosen_action_tuple
+                    else:
+                        dist = torch.distributions.Categorical(probs)
+                        action_scalar = dist.sample().item()
+                        action_coords = game_engine.scalar_to_coordinates(action_scalar)
+            else: # Random agent's turn
+                action_coords = random_agent_eval(game_engine.board, game_engine.get_action_space())
             
-            if game_engine.player == 1: # White's turn
-                if current_player1_policy == ppo_policy_net:
-                    with torch.no_grad():
-                        # Use the act method of the ActorCritic model instance
-                        action_scalar, _, _ = current_player1_policy.act(current_board_for_nn) 
-                    action_coords = game_engine.scalar_to_coordinates(action_scalar)
-                else: # Random agent
-                    action_coords = current_player1_policy(game_engine.board, game_engine.get_action_space())
-            else: # Black's turn (player == -1)
-                if current_player2_policy == ppo_policy_net:
-                    with torch.no_grad():
-                        action_scalar, _, _ = current_player2_policy.act(current_board_for_nn)
-                    action_coords = game_engine.scalar_to_coordinates(action_scalar)
-                else: # Random agent
-                    action_coords = current_player2_policy(game_engine.board, game_engine.get_action_space())
-            
+            if action_coords is None: # Should not happen if logic is correct
+                print("Error: action_coords is None. Defaulting to random.")
+                action_coords = random.choice(game_engine.get_action_space())
+
             game_engine.move(action_coords)
             game_engine.evaluate()
 
-        # Check if PPO won
         if game_engine.winner == ppo_plays_as_player:
             ppo_wins += 1
             
@@ -91,7 +103,7 @@ def train():
     if torch.cuda.is_available():
         device = torch.device("cuda")
         print("Using CUDA device for training.")
-    elif torch.backends.mps.is_available(): # Check for MPS
+    elif torch.backends.mps.is_available(): 
         device = torch.device("mps")
         print("Using MPS device for training.")
     else:
@@ -116,13 +128,12 @@ def train():
     total_timesteps_collected = 0
     num_updates = 0
     
-    all_episode_rewards = [] # To store rewards of all completed episodes for averaging
+    all_episode_rewards = [] 
 
     state, info = env.reset()
-    current_episode_reward_accumulator = 0.0 # Accumulates reward for the current episode
+    current_episode_reward_accumulator = 0.0 
 
     while total_timesteps_collected < MAX_TOTAL_TIMESTEPS:
-        # Collect TIMESTEPS_PER_BATCH
         for _ in range(TIMESTEPS_PER_BATCH):
             valid_actions = info["valid_actions"]
             action_scalar, log_prob, _ = agent.select_action(state, valid_actions) 
@@ -138,29 +149,22 @@ def train():
 
             if done or truncated:
                 all_episode_rewards.append(current_episode_reward_accumulator)
-                current_episode_reward_accumulator = 0.0 # Reset for next episode
+                current_episode_reward_accumulator = 0.0 
                 state, info = env.reset()
             
             if total_timesteps_collected >= MAX_TOTAL_TIMESTEPS:
                 break
         
-        # Batch is full (or training is ending), update the agent
-        if len(memory.states) > 0: # Ensure memory is not empty if MAX_TOTAL_TIMESTEPS is not multiple of TIMESTEPS_PER_BATCH
+        if len(memory.states) > 0: 
             p_loss, v_loss, ent = agent.update(memory)
             memory.clear_memory()
             num_updates += 1
             lr_scheduler.step() 
 
-            # Logging
-            if num_updates % 10 == 0: # Log losses every 10 updates
+            if num_updates % 10 == 0: 
                 current_lr = agent.optimizer.param_groups[0]['lr']
                 avg_ep_reward_str = ""
-                # Log average reward of episodes completed in the last ~TIMESTEPS_PER_BATCH steps
-                # This is an approximation. For more precise per-batch episode rewards,
-                # one would need to track episodes ending within the batch collection.
-                # For now, using the last N episodes from all_episode_rewards.
                 if len(all_episode_rewards) > 0:
-                    # Log average of last, say, 50 episodes if available, or all if fewer
                     lookback_episodes = min(50, len(all_episode_rewards))
                     avg_recent_ep_reward = np.mean(all_episode_rewards[-lookback_episodes:])
                     avg_ep_reward_str = f", Avg Ep Reward (last ~{lookback_episodes}): {avg_recent_ep_reward:.2f}"
