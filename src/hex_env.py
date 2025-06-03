@@ -93,9 +93,9 @@ class HexEnv(gym.Env):
         if self.hex_game.winner != 0:
             terminated = True
             if self.hex_game.winner == original_player:
-                final_reward = 1.0  # Player who made the move won
+                final_reward = 5.0  # Player who made the move won
             else:
-                final_reward = -1.0 # Player who made the move lost (opponent won)
+                final_reward = -5.0 # Player who made the move lost (opponent won)
         
         reward = final_reward + intermediate_reward
 

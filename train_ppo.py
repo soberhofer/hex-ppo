@@ -18,7 +18,7 @@ K_EPOCHS = 10
 EPS_CLIP = 0.2
 GAE_LAMBDA = 0.95 # Currently not used in advantage calculation, but kept for completeness
 
-MAX_TOTAL_TIMESTEPS = 200000  # Total timesteps to train for
+MAX_TOTAL_TIMESTEPS = 2000000  # Total timesteps to train for
 TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
 UPDATES_PER_EVAL = 50        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
 UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2048 steps/update = ~500k steps)
