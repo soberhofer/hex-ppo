@@ -31,7 +31,7 @@ LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
 LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
 WARMUP_EPOCHS = 50
 
-RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of episodes
+RANDOM_OPPONENT_RATIO = 0.1 # Play against random opponent for this fraction of episodes
 
 NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
@@ -176,7 +176,7 @@ def ppo_turn(agent, state, valid_actions, temperature):
 def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: float):
     if with_random and rand_val < RANDOM_OPPONENT_RATIO:
         opponent_type = Opponents.RANDOM
-    elif with_periodic_self and rand_val < RANDOM_OPPONENT_RATIO + 0.5 * (1 - RANDOM_OPPONENT_RATIO):  # 50% of non-random
+    elif with_periodic_self and rand_val < RANDOM_OPPONENT_RATIO + 0.6 * (1 - RANDOM_OPPONENT_RATIO):  # 50% of non-random
         opponent_type = Opponents.FROZEN_SELF
     else:
         opponent_type = Opponents.SELF
