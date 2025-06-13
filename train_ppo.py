@@ -12,7 +12,7 @@ import time
 import copy
 
 # Hyperparameters
-TEMPERATURE = 2.0
+TEMPERATURE = 1.5
 FINAL_TEMPERATURE = 1.0
 HEX_BOARD_SIZE = 7
 INITIAL_LEARNING_RATE = 0.01
@@ -36,7 +36,9 @@ RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of 
 NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
 
-
+if torch.cuda.is_available():
+    torch.backends.cudnn.benchmark = True  # auto-tuner for CNNs
+    torch.set_float32_matmul_precision('high')
 
 # --- Random Agent for Evaluation & Mixed Training ---
 def random_opponent_action_logic(game_engine_instance):
@@ -228,14 +230,15 @@ def get_temperature(total_timesteps_collected):
         Measurement to support more entropy, i.e., more exploration --> agent as is gets stuck too fast
     """
     progress = total_timesteps_collected / MAX_TOTAL_TIMESTEPS
-    return TEMPERATURE * (1 - progress) + FINAL_TEMPERATURE * progress
+    return FINAL_TEMPERATURE + (TEMPERATURE - FINAL_TEMPERATURE) * np.exp(-5 * progress)
+
 
 def train(with_periodic_self: bool = True, with_random: bool = True):
     device = get_device()
     env = HexEnv(size=HEX_BOARD_SIZE)
     obs_shape = env.observation_space.shape
     action_space_size = env.action_space.n
-    agent = PPOAgent(obs_shape, action_space_size, INITIAL_LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device, ENTROPY_COEF_INITIAL)
+    agent = PPOAgent(obs_shape, action_space_size, INITIAL_LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device, ENTROPY_COEF_INITIAL, torch.cuda.is_available())
     memory = RolloutMemory()
 
     if with_periodic_self:
@@ -252,6 +255,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     print(f"Starting PPO training for Hex for {MAX_TOTAL_TIMESTEPS} timesteps...")
+    print("Training on #experiments Branch")
     print(f"Batch size: {TIMESTEPS_PER_BATCH}, Updates per batch: {K_EPOCHS}")
 
     if with_random:

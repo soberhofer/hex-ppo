@@ -22,6 +22,8 @@ def load_ppo_model(model_path):
         action_space_size = HEX_BOARD_SIZE * HEX_BOARD_SIZE
 
         _ppo_model = ActorCritic(obs_shape, action_space_size)
+
+        # could lead to problems, since training on gpu enabled
         _ppo_model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
         _ppo_model.eval() # Set to evaluation mode
         print(f"PPO model loaded from {model_path}")
