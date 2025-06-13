@@ -11,7 +11,8 @@ class HexEnv(gym.Env):
         self.hex_game = hexPosition(size=self.size)
         self.observation_space = spaces.Box(low=-1, high=1, shape=(self.size, self.size), dtype=int)
         self.action_space = spaces.Discrete(self.size * self.size)
-        self.bridge_reward_value = 0 # Value for forming a bridge
+        self.bridge_reward_value = 0.1 # Value for forming a bridge
+        self.opponent_policy = None
 
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
@@ -31,7 +32,7 @@ class HexEnv(gym.Env):
 
     def step(self, action):
         coordinates = self.hex_game.scalar_to_coordinates(action)
-        
+
         # Check if the move is valid
         if coordinates not in self.hex_game.get_action_space():
             # Invalid move, penalize and end episode
@@ -88,15 +89,35 @@ class HexEnv(gym.Env):
 
         final_reward = 0.0
         terminated = False
-        truncated = False # Not used in this env
+        truncated = False  # Not used in this env
+
 
         if self.hex_game.winner != 0:
             terminated = True
             if self.hex_game.winner == original_player:
                 final_reward = 5.0  # Player who made the move won
             else:
-                #print(f"Player {original_player} made a move but lost the game.")
-                final_reward = -5.0 # Player who made the move lost (opponent won)
+                final_reward = -5.0  # Player who made the move lost (opponent won)
+
+        # if there is an opponent policy defined
+        elif not terminated and self.opponent_policy is not None and self.hex_game.player == -original_player:
+            # Opponent makes a move
+            board = self.hex_game.board
+            valid_actions = self.hex_game.get_action_space()
+
+            opponent_action_coords = self.opponent_policy(board, valid_actions)
+            self.hex_game.move(opponent_action_coords)
+            self.hex_game.evaluate()
+
+            # check if the opponent won
+            if self.hex_game.winner != 0:
+                terminated = True
+                if self.hex_game.winner == -original_player:
+                    final_reward -= 5.0  # we lost
+                else:
+                    final_reward += 5.0  # we won because of an invalid move of the opponent
+
+
         
         reward = final_reward + intermediate_reward
 
@@ -111,3 +132,6 @@ class HexEnv(gym.Env):
 
     def close(self):
         pass
+
+    def set_opponent_policy(self, policy_fn):
+        self.opponent_policy = policy_fn

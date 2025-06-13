@@ -35,23 +35,23 @@ class ActorCritic(nn.Module):
         obs_float = obs.float() # Use a different variable name to keep original obs for residual
         
         # Main path
-        x = F.relu(self.conv1(obs_float))
-        x = F.relu(self.conv2(x))
+        x = F.silu(self.conv1(obs_float))
+        x = F.silu(self.conv2(x))
         
         # Residual connection
         residual = self.residual_projection(obs_float)
         x = x + residual
-        x = F.relu(x) # Apply ReLU after adding residual
+        x = F.silu(x) # Apply silu after adding residual
         
         # Flatten the output for the fully connected layers
         x = x.view(x.size(0), -1) # Flatten all dimensions except batch
 
         # Actor
-        actor_hidden = F.relu(self.actor_fc1(x))
+        actor_hidden = F.silu(self.actor_fc1(x))
         action_logits = self.actor_fc2(actor_hidden)
         
         # Critic
-        critic_hidden = F.relu(self.critic_fc1(x))
+        critic_hidden = F.silu(self.critic_fc1(x))
         value = self.critic_fc2(critic_hidden)
 
         return action_logits, value

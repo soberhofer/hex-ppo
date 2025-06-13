@@ -5,21 +5,30 @@ from src.ppo_model import ActorCritic
 import numpy as np
 
 class PPOAgent:
-    def __init__(self, obs_shape, action_space_size, lr=3e-4, gamma=0.99, k_epochs=4, eps_clip=0.2, gae_lambda=0.95, device=torch.device("cpu")):
+    def __init__(self, obs_shape, action_space_size, lr=3e-4, gamma=0.99, k_epochs=4, eps_clip=0.2, gae_lambda=0.95, device=torch.device("cpu"), entropy_coef=0.05, temperature=2.0):
         self.gamma = gamma
         self.k_epochs = k_epochs
         self.eps_clip = eps_clip
         self.gae_lambda = gae_lambda
         self.device = device
+        self.entropy_coef = entropy_coef
+        self.temperature = temperature
 
         self.policy = ActorCritic(obs_shape, action_space_size).to(device)
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+        self.optimizer = torch.optim.AdamW(
+                self.policy.parameters(),
+                lr=lr,
+                weight_decay=1e-3,  # l2 regularization, reduce overfitting
+                betas=(0.9, 0.999)  # control momentum (gradient average), reduce oszillation, control adaptive lrs
+            )
+
+        #self.optimizer = optim.AdamW(self.policy.parameters(), lr=lr)
         self.policy_old = ActorCritic(obs_shape, action_space_size).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
 
         self.MseLoss = torch.nn.MSELoss()
 
-    def select_action(self, observation, valid_actions):
+    def select_action(self, observation, valid_actions, temperature):
         with torch.no_grad():
             # Add batch and channel dimensions, then move to device
             obs_tensor = torch.FloatTensor(observation).unsqueeze(0).unsqueeze(1).to(self.device) 
@@ -32,7 +41,7 @@ class PPOAgent:
             
             masked_action_logits = action_logits + mask
             
-            probs = torch.nn.functional.softmax(masked_action_logits, dim=-1)
+            probs = torch.nn.functional.softmax(masked_action_logits / temperature, dim=-1)
             dist = Categorical(probs)
             action = dist.sample()
             action_log_prob = dist.log_prob(action)
@@ -40,6 +49,10 @@ class PPOAgent:
         return action.item(), action_log_prob.item(), value.item()
 
     def update(self, memory):
+
+        # entropy coeff annealing --> supports more exploration in the beginning, reduced throughout training
+        self.entropy_coef = max(1e-4, self.entropy_coef * 0.9995)
+
         # Convert lists to tensors, add channel dimension, and move to device
         old_states = torch.stack(memory.states).float().unsqueeze(1).to(self.device)
         old_actions = torch.stack(memory.actions).long().to(self.device)
@@ -64,7 +77,7 @@ class PPOAgent:
             policy_loss = -torch.min(surr1, surr2).mean()
             value_loss = self.MseLoss(state_values.squeeze(), old_rewards) # Assuming old_rewards are already returns
 
-            loss = policy_loss + 0.5 * value_loss - 0.001 * dist_entropy # Reduced entropy bonus
+            loss = policy_loss + 0.5 * value_loss - self.entropy_coef * dist_entropy
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -74,7 +87,7 @@ class PPOAgent:
         # Copy new weights into old policy
         self.policy_old.load_state_dict(self.policy.state_dict())
 
-        return policy_loss.item(), value_loss.item(), dist_entropy.item()
+        return policy_loss.item(), value_loss.item(), dist_entropy.item(), loss
 
     def _calculate_advantages(self, rewards, is_terminals, states):
         # Calculate discounted rewards (returns)
