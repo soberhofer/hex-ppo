@@ -11,7 +11,7 @@ class HexEnv(gym.Env):
         self.hex_game = hexPosition(size=self.size)
         self.observation_space = spaces.Box(low=-1, high=1, shape=(self.size, self.size), dtype=int)
         self.action_space = spaces.Discrete(self.size * self.size)
-        self.bridge_reward_value = 0.1 # Value for forming a bridge
+        self.bridge_reward_value = 0 # Value for forming a bridge
 
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
@@ -95,6 +95,7 @@ class HexEnv(gym.Env):
             if self.hex_game.winner == original_player:
                 final_reward = 5.0  # Player who made the move won
             else:
+                #print(f"Player {original_player} made a move but lost the game.")
                 final_reward = -5.0 # Player who made the move lost (opponent won)
         
         reward = final_reward + intermediate_reward

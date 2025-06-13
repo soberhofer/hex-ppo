@@ -12,13 +12,13 @@ import time
 
 # Hyperparameters
 HEX_BOARD_SIZE = 7
-INITIAL_LEARNING_RATE = 0.001 
+INITIAL_LEARNING_RATE = 0.01 
 GAMMA = 0.99
 K_EPOCHS = 10 
 EPS_CLIP = 0.2
 GAE_LAMBDA = 0.95 
 
-MAX_TOTAL_TIMESTEPS = 200000  
+MAX_TOTAL_TIMESTEPS = 1000000  
 TIMESTEPS_PER_BATCH = 2048   
 UPDATES_PER_EVAL = 50        
 UPDATES_PER_SAVE = 250       
@@ -105,7 +105,7 @@ def train():
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-    # device = torch.device("cpu")  # User requested to keep forced CPU. Comment out to use detected device.
+    device = torch.device("cpu")  # User requested to keep forced CPU. Comment out to use detected device.
     print(f"Training will run on: {device}")
 
     env = HexEnv(size=HEX_BOARD_SIZE)
