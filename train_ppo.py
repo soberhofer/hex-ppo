@@ -32,11 +32,12 @@ LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
 WARMUP_EPOCHS = 50
 
 RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of episodes
+RANDOM_OPPONENT_RATIO_2 = 0.1
 
 NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
 
-frozen_agent_dict = {}
+frozen_agent_list = []
 
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True  # auto-tuner for CNNs
@@ -115,30 +116,34 @@ def ppo_action_from_policy(board, valid_actions: list, policy_net: torch.nn.Modu
 
 def evaluate_mixed(ppo_policy_net, device, env: HexEnv, num_games=100):
     """
-    Evaluate against 50 random games and 50 games against frozen agents loaded from file.
+    Evaluate against 50 random games and 50 x agents in frozen_agents games against frozen agents
     """
-    assert len(frozen_agent_dict) > 0, "At least one frozen agent .pth file is required for evaluation."
+    assert len(frozen_agent_list) > 0, "At least one frozen agent .pth file is required for evaluation."
 
-    print(f"\n--- Evaluating PPO Agent vs Random (50) + Frozen Agents ({len(frozen_agent_dict)} total, 50 games) ---")
+    print(f"\n--- Evaluating PPO Agent vs Random (50) + Frozen Agents ({len(frozen_agent_list)} total, 50 games) ---")
 
     stats = {
         Opponents.RANDOM: {"wins": 0, "games": 0},
-        Opponents.FROZEN_SELF: [{"wins": 0, "games": 0} for _ in frozen_agent_dict.items()]
+        Opponents.FROZEN_SELF: [{"wins": 0, "games": 0} for _ in frozen_agent_list]
     }
 
     ppo_policy_net.eval()
     game_engine = hexPosition(size=HEX_BOARD_SIZE)
 
-    for i in range(num_games):
+    total_games = 50 + 50 * len(frozen_agent_list)
+
+    for i in range(total_games):
         game_engine.reset()
         ppo_as_player = 1 if i % 2 == 0 else -1
         game_engine.player = 1
 
         if i < 50:
             opponent_type = Opponents.RANDOM
+            frozen_idx = None
         else:
-            opponent_index = (i - 50) % len(frozen_agent_dict)
-            opponent_type = f"frozen_{opponent_index}"
+            # From 50 onward: evaluate each frozen agent 50 times
+            opponent_idx = (i - 50) // 50  # 0, 1, 2, ...
+            opponent_type = f"frozen_{opponent_idx}"
 
         while game_engine.winner == 0:
             current_board = torch.FloatTensor(game_engine.board).unsqueeze(0).unsqueeze(1).to(device)
@@ -153,10 +158,7 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, num_games=100):
                 if opponent_type == Opponents.RANDOM:
                     action = random.choice(valid_actions)
                 else:
-                    idx = int(opponent_type.split("_")[1])
-                    model_idx = random.choice(list(frozen_agent_dict.keys()))
-                    frozen_agent = frozen_agent_dict[model_idx]
-
+                    frozen_agent = frozen_agent_list[opponent_idx][1]
                     action = ppo_action_from_policy(current_board, valid_actions, frozen_agent.policy, device, env)
 
             game_engine.move(action)
@@ -183,6 +185,7 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, num_games=100):
 
     for i, frozen_stat in enumerate(stats[Opponents.FROZEN_SELF]):
         wins, games = frozen_stat["wins"], frozen_stat["games"]
+        print("agents from updates: ", [agent[0] for agent in frozen_agent_list])
         print(f"Frozen Agent {i}: "
               f"{wins} / {games} wins ({100 * wins / max(1, games):.2f}%)")
 
@@ -252,7 +255,10 @@ def freeze_agent_and_reset_policy(frozen_agent, agent, env, device, num_updates)
     frozen_agent = copy.deepcopy(agent)
 
     # TODO: check if this can lead to memory problems
-    frozen_agent_dict.update({num_updates: frozen_agent})
+    if len(frozen_agent_list) == 3:
+        frozen_agent_list.pop(0)    # remove first, currently want to keep three agents only
+
+    frozen_agent_list.append((num_updates, frozen_agent))
 
     env.set_opponent_policy(lambda b, va: ppo_action_from_policy(b, va, frozen_agent.policy, device, env))
     print(f"Opponent replaced with frozen snapshot at update {num_updates}")
@@ -261,10 +267,10 @@ def ppo_turn(agent, state, valid_actions, temperature):
     action_scalar_ppo, log_prob_ppo, _ = agent.select_action(state, valid_actions, temperature)
     return action_scalar_ppo, log_prob_ppo
 
-def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: float, force_first = False):
-    if with_random and rand_val < RANDOM_OPPONENT_RATIO:
+def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: float, oppenent_ratio: float, force_first = False):
+    if with_random and rand_val < oppenent_ratio:
         opponent_type = Opponents.RANDOM
-    elif with_periodic_self and rand_val < RANDOM_OPPONENT_RATIO + 0.6 * (1 - RANDOM_OPPONENT_RATIO):  # 50% of non-random
+    elif with_periodic_self and rand_val < oppenent_ratio + 0.6 * (1 - oppenent_ratio):  # 60% of non-random
         opponent_type = Opponents.FROZEN_SELF
     else:
         opponent_type = Opponents.SELF
@@ -360,7 +366,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
     # Determine opponent for the new episode
     rand_val = random.random()
-    opponent_type = determine_opponent(with_random, with_periodic_self, rand_val)
+    opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, RANDOM_OPPONENT_RATIO)
 
     ppo_agent_player_id = 1 # Default, will be set if opponent is random
     if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF]:
@@ -419,9 +425,14 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                 all_episode_rewards.append(current_episode_reward_accumulator)
                 current_episode_reward_accumulator = 0.0 
                 state, info = env.reset()
+                rand_val = random.random()
 
                 # Determine opponent for the new episode
-                opponent_type = determine_opponent(with_random, with_periodic_self, rand_val)
+                if total_timesteps_collected >= MAX_TOTAL_TIMESTEPS/2:
+                    random_opponent_ratio = RANDOM_OPPONENT_RATIO_2
+                else:
+                    random_opponent_ratio = RANDOM_OPPONENT_RATIO
+                opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_opponent_ratio)
                 if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF]:
                     ppo_agent_player_id = random.choice([1, -1])
 
@@ -447,7 +458,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
 
             # --- log outputs every ten updates
-            if num_updates % 10 == 0: 
+            if num_updates % 10 == 0:
                 current_lr = agent.optimizer.param_groups[0]['lr']
                 avg_ep_reward_str = ""
                 if len(all_episode_rewards) > 0:
