@@ -12,7 +12,7 @@ import time
 import copy
 
 # Hyperparameters
-TEMPERATURE = 1.5
+TEMPERATURE = 1.4
 FINAL_TEMPERATURE = 1.0
 HEX_BOARD_SIZE = 7
 INITIAL_LEARNING_RATE = 0.01
@@ -22,19 +22,21 @@ EPS_CLIP = 0.2
 GAE_LAMBDA = 0.95
 ENTROPY_COEF_INITIAL = 0.05  # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
 
-MAX_TOTAL_TIMESTEPS = 1000000  # Total timesteps to train for
+MAX_TOTAL_TIMESTEPS = 3000000  # Total timesteps to train for
 TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
-UPDATES_PER_EVAL = 50        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
+UPDATES_PER_EVAL = 10        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
 UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2048 steps/update = ~500k steps)
 # LR Scheduler: step_size is now in terms of number of updates
 LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
 LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
 WARMUP_EPOCHS = 50
 
-RANDOM_OPPONENT_RATIO = 0.1 # Play against random opponent for this fraction of episodes
+RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of episodes
 
 NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
+
+frozen_agent_dict = {}
 
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True  # auto-tuner for CNNs
@@ -79,8 +81,12 @@ def ppo_action_from_policy(board, valid_actions: list, policy_net: torch.nn.Modu
         # get logits from policy network (model.forward())
         action_logits, _ = policy_net(board)
 
-        # get valid actions and convert to scalar indices (flat)
-        valid_action_indices = [env.hex_game.coordinate_to_scalar(a) for a in valid_actions]
+        valid_action_indices = []
+        for a in valid_actions:
+            if isinstance(a, int):
+                valid_action_indices.append(a)
+            else:
+                valid_action_indices.append(env.hex_game.coordinate_to_scalar(a))
 
         # exclude invalid actions to get excluded by softmax
         mask = torch.full(action_logits.shape, -float('inf'), device=device)
@@ -105,6 +111,87 @@ def ppo_action_from_policy(board, valid_actions: list, policy_net: torch.nn.Modu
             action_scalar = dist.sample().item()
             action_coords = env.hex_game.scalar_to_coordinates(action_scalar)
         return action_coords
+
+
+def evaluate_mixed(ppo_policy_net, device, env: HexEnv, num_games=100):
+    """
+    Evaluate against 50 random games and 50 games against frozen agents loaded from file.
+    """
+    assert len(frozen_agent_dict) > 0, "At least one frozen agent .pth file is required for evaluation."
+
+    print(f"\n--- Evaluating PPO Agent vs Random (50) + Frozen Agents ({len(frozen_agent_dict)} total, 50 games) ---")
+
+    stats = {
+        Opponents.RANDOM: {"wins": 0, "games": 0},
+        Opponents.FROZEN_SELF: [{"wins": 0, "games": 0} for _ in frozen_agent_dict.items()]
+    }
+
+    ppo_policy_net.eval()
+    game_engine = hexPosition(size=HEX_BOARD_SIZE)
+
+    for i in range(num_games):
+        game_engine.reset()
+        ppo_as_player = 1 if i % 2 == 0 else -1
+        game_engine.player = 1
+
+        if i < 50:
+            opponent_type = Opponents.RANDOM
+        else:
+            opponent_index = (i - 50) % len(frozen_agent_dict)
+            opponent_type = f"frozen_{opponent_index}"
+
+        while game_engine.winner == 0:
+            current_board = torch.FloatTensor(game_engine.board).unsqueeze(0).unsqueeze(1).to(device)
+            valid_actions = game_engine.get_action_space()
+
+            is_ppo_turn = (game_engine.player == 1 and ppo_as_player == 1) or \
+                          (game_engine.player == -1 and ppo_as_player == -1)
+
+            if is_ppo_turn:
+                action = ppo_action_from_policy(current_board, valid_actions, ppo_policy_net, device, env)
+            else:
+                if opponent_type == Opponents.RANDOM:
+                    action = random.choice(valid_actions)
+                else:
+                    idx = int(opponent_type.split("_")[1])
+                    model_idx = random.choice(list(frozen_agent_dict.keys()))
+                    frozen_agent = frozen_agent_dict[model_idx]
+
+                    action = ppo_action_from_policy(current_board, valid_actions, frozen_agent.policy, device, env)
+
+            game_engine.move(action)
+            game_engine.evaluate()
+
+        # Count result
+        if game_engine.winner == ppo_as_player:
+            if opponent_type == Opponents.RANDOM:
+                stats[Opponents.RANDOM]["wins"] += 1
+            else:
+                idx = int(opponent_type.split("_")[1])
+                stats[Opponents.FROZEN_SELF][idx]["wins"] += 1
+
+        if opponent_type == Opponents.RANDOM:
+            stats[Opponents.RANDOM]["games"] += 1
+        else:
+            idx = int(opponent_type.split("_")[1])
+            stats[Opponents.FROZEN_SELF][idx]["games"] += 1
+
+    # --- Report results ---
+    print("\n--- Evaluation Results ---")
+    print(f"Random Opponent: {stats[Opponents.RANDOM]['wins']} / {stats[Opponents.RANDOM]['games']} wins "
+          f"({100 * stats[Opponents.RANDOM]['wins'] / max(1, stats[Opponents.RANDOM]['games']):.2f}%)")
+
+    for i, frozen_stat in enumerate(stats[Opponents.FROZEN_SELF]):
+        wins, games = frozen_stat["wins"], frozen_stat["games"]
+        print(f"Frozen Agent {i}: "
+              f"{wins} / {games} wins ({100 * wins / max(1, games):.2f}%)")
+
+    print("--- Evaluation Finished ---\n")
+    ppo_policy_net.train()
+    return stats
+
+
+
 
 
 # --- Evaluation Function (integrated) ---
@@ -162,10 +249,11 @@ def freeze_agent_and_reset_policy(frozen_agent, agent, env, device, num_updates)
     """"
         Freezes the agent and resets the policy, so that ppo agent can play against older versions of itself.
     """
-    if frozen_agent is not None:
-        del frozen_agent
-
     frozen_agent = copy.deepcopy(agent)
+
+    # TODO: check if this can lead to memory problems
+    frozen_agent_dict.update({num_updates: frozen_agent})
+
     env.set_opponent_policy(lambda b, va: ppo_action_from_policy(b, va, frozen_agent.policy, device, env))
     print(f"Opponent replaced with frozen snapshot at update {num_updates}")
 
@@ -173,13 +261,16 @@ def ppo_turn(agent, state, valid_actions, temperature):
     action_scalar_ppo, log_prob_ppo, _ = agent.select_action(state, valid_actions, temperature)
     return action_scalar_ppo, log_prob_ppo
 
-def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: float):
+def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: float, force_first = False):
     if with_random and rand_val < RANDOM_OPPONENT_RATIO:
         opponent_type = Opponents.RANDOM
     elif with_periodic_self and rand_val < RANDOM_OPPONENT_RATIO + 0.6 * (1 - RANDOM_OPPONENT_RATIO):  # 50% of non-random
         opponent_type = Opponents.FROZEN_SELF
     else:
         opponent_type = Opponents.SELF
+
+    if force_first:
+        opponent_type = Opponents.FROZEN_SELF
 
     return opponent_type
 
@@ -217,12 +308,12 @@ def get_scheduler(agent):
     )
     return warmup_scheduler, plateau_scheduler
 
-def update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, v_loss):
+def update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, v_loss, avg_reward):
     if num_updates < WARMUP_EPOCHS:
         warmup_scheduler.step()
     else:
         # plateau scheduler needs step
-        plateau_scheduler.step(v_loss)
+        plateau_scheduler.step(avg_reward)
     # lr_scheduler.step()
 
 def get_temperature(total_timesteps_collected):
@@ -272,7 +363,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
     opponent_type = determine_opponent(with_random, with_periodic_self, rand_val)
 
     ppo_agent_player_id = 1 # Default, will be set if opponent is random
-    if opponent_type == Opponents.RANDOM:
+    if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF]:
         ppo_agent_player_id = random.choice([1, -1])
 
     while total_timesteps_collected < MAX_TOTAL_TIMESTEPS:
@@ -284,6 +375,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
             
             is_ppo_turn_for_memory = False
             current_player_in_game = env.hex_game.player # Player whose turn it is in hex_engine
+            #print(f"[BEFORE STEP] Current player: {env.hex_game.player}, action: {action_scalar_to_env}")
 
             # ---- player or opponent make a move
             if current_player_in_game == ppo_agent_player_id or opponent_type == Opponents.SELF:
@@ -297,7 +389,8 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
             elif with_periodic_self and  opponent_type == Opponents.FROZEN_SELF:
                 #print("FROZEN SELF OPPONENT")
-                action_scalar_to_env = ppo_action_from_policy(state, valid_actions, frozen_agent.policy, device, env) # ignore warning, frozen agent gets initialized, if periodic self is initialized
+                # train against latest saved
+                action_scalar_to_env = env.hex_game.coordinate_to_scalar(ppo_action_from_policy(state, valid_actions, frozen_agent.policy, device, env)) # ignore warning, frozen agent gets initialized, if periodic self is initialized
 
             elif with_random and opponent_type == Opponents.RANDOM:
                 #print("RANDOM OPPONENT ")
@@ -309,6 +402,8 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
             # ----- environment gets updated and step saved, if move was agents move
             next_state, step_reward, done, truncated, next_info = env.step(action_scalar_to_env)
+            #print(
+            #    f"[STEP] Action taken: {action_scalar_to_env}, reward: {step_reward}, done: {done}, next_player: {env.hex_game.player}")
 
             if is_ppo_turn_for_memory: # Only add to memory if PPO made the move
                 memory.add(state, action_scalar_to_env, log_prob_ppo, step_reward, done or truncated)
@@ -327,7 +422,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
                 # Determine opponent for the new episode
                 opponent_type = determine_opponent(with_random, with_periodic_self, rand_val)
-                if opponent_type == Opponents.RANDOM:
+                if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF]:
                     ppo_agent_player_id = random.choice([1, -1])
 
             if total_timesteps_collected >= MAX_TOTAL_TIMESTEPS:
@@ -343,9 +438,12 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
             num_updates += 1
 
             # LR updates --> correct scheduler should get increased
-            # TODO: check welcher loss am besten
-            #update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, v_loss)
-            update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, combined_loss)
+            # update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, v_loss)
+            # last x rewards mean
+            avg_rewards = np.mean(all_episode_rewards[-15:])
+
+            # try to update scheduler based on increasing rewards
+            update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, combined_loss, -avg_rewards) # neg due to minimize of plateauscheduler
 
 
             # --- log outputs every ten updates
@@ -362,7 +460,8 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
             # --- periodic evaluation
             if num_updates > 0 and num_updates % UPDATES_PER_EVAL == 0:
-                evaluate_against_random(agent.policy, device, env, NUM_EVAL_GAMES)
+                evaluate_mixed(agent.policy, device, env )
+                #evaluate_against_random(agent.policy, device, env, NUM_EVAL_GAMES)
 
             # --- periodic model saving
             if num_updates > 0 and num_updates % UPDATES_PER_SAVE == 0:
