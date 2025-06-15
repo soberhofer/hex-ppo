@@ -56,7 +56,7 @@ class HexEnv(gym.Env):
 
             if len(common_empty) == 2:
                 reward += self.bridge_reward_value
-                break  # Stop after first bridge
+                # break  # Stop after first bridge
         return reward
 
     def _calculate_center_control(self, coords):

@@ -14,24 +14,24 @@ import copy
 TEMPERATURE = 1.4
 FINAL_TEMPERATURE = 1.0
 HEX_BOARD_SIZE = 7
-INITIAL_LEARNING_RATE = 0.01
-GAMMA = 0.997
+INITIAL_LEARNING_RATE = 0.001 # this is the learning rate up until linear warm up goes
+GAMMA = 0.99
 K_EPOCHS = 5
 EPS_CLIP = 0.15
 GAE_LAMBDA = 0.9             # bias in advantage estimates
 ENTROPY_COEF_INITIAL = 0.03 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
 ENTROPY_COEF_FINAL = 0.001
 
-MAX_TOTAL_TIMESTEPS = 3000000  # Total timesteps to train for
-TIMESTEPS_PER_BATCH = 4096   # Timesteps to collect per batch before updating
+MAX_TOTAL_TIMESTEPS = 5000000  # Total timesteps to train for
+TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
 UPDATES_PER_EVAL = 10        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
 UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2048 steps/update = ~500k steps)
 # LR Scheduler: step_size is now in terms of number of updates
 LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
 LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
-WARMUP_EPOCHS = 0.1 * MAX_TOTAL_TIMESTEPS # 10% of overall total steps
+WARMUP_EPOCHS = int(0.05 * MAX_TOTAL_TIMESTEPS) # 5% of overall total steps
 
-RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of episodes
+RANDOM_OPPONENT_RATIO = 0.3 # Play against random opponent for this fraction of episodes in the beginning
 
 NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
@@ -332,7 +332,7 @@ def ppo_turn(agent, state, valid_actions, temperature):
     action_scalar_ppo, log_prob_ppo, _ = agent.select_action(state, valid_actions, temperature)
     return action_scalar_ppo, log_prob_ppo
 
-def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: float, random_opponent_ratio: float, frozen_self_ratio: float,  greedy_ratio: float, force_first = False):
+def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: float, random_opponent_ratio: float, frozen_self_ratio: float,  greedy_ratio: float, self_ratio: float, force_first = False):
     if force_first:
         return Opponents.FROZEN_SELF
     #print(f"OPPONENT RANDOM: {rand_val} / {adjusted_random_ratio}")
@@ -340,18 +340,17 @@ def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: fl
     #print(f"OPPONENT GREEDY: {rand_val} / {adjusted_random_ratio + frozen_self_ratio + greedy_ratio}")
     #print(f"OPPONENT SELF: {rand_val} / {adjusted_random_ratio + frozen_self_ratio + greedy_ratio}")
 
-    # Decision tree
-    if with_random and rand_val < random_opponent_ratio:
-        #print("chosen - Random")
+    random_cutoff = random_opponent_ratio
+    frozen_cutoff = random_cutoff + frozen_self_ratio
+    greedy_cutoff = frozen_cutoff + greedy_ratio
+
+    if with_random and rand_val < random_cutoff:
         return Opponents.RANDOM
-    elif with_periodic_self and rand_val < random_opponent_ratio + frozen_self_ratio:
-        #print("chosen - Frozen")
+    elif with_periodic_self and rand_val < frozen_cutoff:
         return Opponents.FROZEN_SELF
-    elif rand_val < random_opponent_ratio + frozen_self_ratio + greedy_ratio:
-        # print("chosen - Greedy")
+    elif rand_val < greedy_cutoff:
         return Opponents.GREEDY
     else:
-        #print("chosen - self")
         return Opponents.SELF
 
 
@@ -417,15 +416,25 @@ def get_entropy_coef(current_step, initial=ENTROPY_COEF_INITIAL, final=ENTROPY_C
 
 def get_ratios(total_timesteps_collected: int):
     # Determine opponent for the new episode
-    rand_val = random.random()
-    random_ratio = get_random_opp_prob(total_timesteps_collected)
-    # Calculate dynamic greedy ratio (increases as random decreases)
     progress = min(total_timesteps_collected / MAX_TOTAL_TIMESTEPS, 1.0)
-    greedy_ratio = (1 - random_ratio) * progress  # Scales from 0 up
-    #adjusted_random_ratio = random_ratio * (1 - progress)
-    frozen_self_ratio = 0.6 * (1 - random_ratio - greedy_ratio)
-    # print(rand_val, random_ratio, progress, greedy_ratio, frozen_self_ratio )
-    return rand_val, random_ratio, progress, greedy_ratio, frozen_self_ratio
+
+    if progress < 1/3:
+        random_ratio = RANDOM_OPPONENT_RATIO
+        greedy_ratio = 0.0
+    elif progress < 2/3:
+        random_ratio = RANDOM_OPPONENT_RATIO / 2
+        greedy_ratio = RANDOM_OPPONENT_RATIO / 2
+    else:
+        random_ratio = 0.0
+        greedy_ratio = RANDOM_OPPONENT_RATIO
+
+    remaining = max(0.0, 1.0 - random_ratio - greedy_ratio)
+
+    self_ratio = 0.3 * remaining
+    frozen_ratio = 0.7 * remaining
+
+    rand_val = random.random()
+    return rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio
 
 def train(with_periodic_self: bool = True, with_random: bool = True):
     device = get_device()
@@ -455,7 +464,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
     print(f"Batch size: {TIMESTEPS_PER_BATCH}, Updates per batch: {K_EPOCHS}")
 
     if with_random:
-        print(f"Playing against random opponent with {RANDOM_OPPONENT_RATIO*100}% probability.")
+        print(f"Playing against random opponent with initially {RANDOM_OPPONENT_RATIO*100}% probability.")
 
     total_timesteps_collected = 0
     num_updates = 0
@@ -463,8 +472,8 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
     state, info = env.reset()
     current_episode_reward_accumulator = 0.0
 
-    rand_val, random_ratio, progress, greedy_ratio, frozen_ratio = get_ratios(total_timesteps_collected)
-    opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, frozen_ratio, greedy_ratio)
+    rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio = get_ratios(total_timesteps_collected)
+    opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, frozen_ratio, greedy_ratio, self_ratio)
 
     ppo_agent_player_id = 1 # Default, will be set if opponent is random
     if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF, Opponents.GREEDY]:
@@ -531,7 +540,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
                 # Determine opponent for the new episode
                 rand_val, random_ratio, progress, greedy_ratio, frozen_ratio = get_ratios(total_timesteps_collected)
-                opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, frozen_ratio, greedy_ratio)
+                opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, frozen_ratio, greedy_ratio, self_ratio)
 
                 if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF, Opponents.GREEDY]:
                     ppo_agent_player_id = random.choice([1, -1])

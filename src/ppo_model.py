@@ -30,16 +30,16 @@ class ActorCritic(nn.Module):
         # Calculate the output size of the convolutional layers
         # The size remains the same due to padding=1 and stride=1
         # conv_output_size = 64 * board_size * board_size
-        # conv_output_size_wo_attention_pooling = 128 * board_size ** 2
-        conv_output_size = 128 # with attention pooling
+        conv_output_size = 128 * board_size ** 2 # without attention pooling
+        # conv_output_size = 128 # with attention pooling
 
         # Attention pooling
-        self.attention = nn.Sequential(
+        """self.attention = nn.Sequential(
             nn.Linear(128, 64),
             nn.SiLU(),
             nn.Linear(64, 1),
             nn.Softmax(dim=1)
-        )
+        )"""
 
         # Actor (Policy) network
         #self.actor_fc1 = nn.Linear(conv_output_size, 256)
@@ -65,12 +65,10 @@ class ActorCritic(nn.Module):
         x = F.silu(self.conv1(x))
         x = F.silu(self.conv2(x))
         x = self.conv3(x) + residual  # Skip connection
+        x = F.silu(x)  # Apply silu after adding residual
 
-        # Attention Pooling (optional)
-        batch, channels, h, w = x.shape
-        x_flat = x.view(batch, channels, -1).permute(0, 2, 1)
-        attn = self.attention(x_flat)
-        x = (x_flat * attn).sum(dim=1)
+        x = x.view(x.size(0), -1)
+
 
         # Heads
         policy = self.actor(x)
