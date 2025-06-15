@@ -30,6 +30,65 @@ class HexEnv(gym.Env):
         info = self._get_info()
         return observation, info
 
+    def _get_player_stones(self, player):
+        """Returns list of (row,col) coordinates for all stones belonging to player"""
+        stones = []
+        for r in range(self.hex_game.size):
+            for c in range(self.hex_game.size):
+                if self.hex_game.board[r][c] == player:
+                    stones.append((r, c))
+        return stones
+
+    def _calculate_bridge_reward(self, coordinates, player):
+        reward = 0
+        player_stones = self._get_player_stones(player)  # Pre-compute
+
+        for stone in player_stones:
+            if stone == coordinates:
+                continue
+
+            common_empty = [
+                coord for coord in
+                set(self.hex_game._get_adjacent(coordinates)) &
+                set(self.hex_game._get_adjacent(stone))
+                if self.hex_game.board[coord[0]][coord[1]] == 0
+            ]
+
+            if len(common_empty) == 2:
+                reward += self.bridge_reward_value
+                break  # Stop after first bridge
+        return reward
+
+    def _calculate_center_control(self, coords):
+        """Rewards controlling central hexes"""
+        center = self.hex_game.size // 2
+        distance = max(abs(coords[0] - center), abs(coords[1] - center))
+
+        # Normalized reward based on distance from center
+        return max(0, 0.2 * (1 - distance / center))
+
+    def _calculate_chain_reward(self, new_stone, player):
+        """Rewards creating longer connected stone groups"""
+        visited = set()
+        queue = [new_stone]
+        chain_length = 0
+
+        while queue:
+            current = queue.pop()
+            if current in visited:
+                continue
+
+            visited.add(current)
+            chain_length += 1
+
+            for neighbor in self.hex_game._get_adjacent(current):
+                if (self.hex_game.board[neighbor[0]][neighbor[1]] == player and
+                        neighbor not in visited):
+                    queue.append(neighbor)
+
+        # Scaling reward (capped at 5 stones)
+        return 0.1 * min(chain_length, 5)
+
     def step(self, action):
         coordinates = self.hex_game.scalar_to_coordinates(action)
 
@@ -48,56 +107,24 @@ class HexEnv(gym.Env):
         # Make the move
         self.hex_game.move(coordinates) # board is updated here, self.hex_game.player is flipped
 
-        intermediate_reward = 0.1
-        
-        # --- Bridge Detection ---
-        # The stone just placed is at 'coordinates' by 'original_player'.
-        # Check if this move formed any new bridges.
-        newly_placed_stone = coordinates
-        
-        # Iterate over all stones of the player who just moved (original_player)
-        # to find potential existing stones (S1) that could form a bridge with newly_placed_stone (S2)
-        for r_idx in range(self.hex_game.size):
-            for c_idx in range(self.hex_game.size):
-                if self.hex_game.board[r_idx][c_idx] == original_player:
-                    existing_stone = (r_idx, c_idx)
-                    if existing_stone == newly_placed_stone:
-                        continue # Don't check a stone against itself
-
-                    # Find common neighbors of newly_placed_stone and existing_stone
-                    neighbors_new = set(self.hex_game._get_adjacent(newly_placed_stone))
-                    neighbors_existing = set(self.hex_game._get_adjacent(existing_stone))
-                    
-                    common_neighbors_coords = list(neighbors_new.intersection(neighbors_existing))
-                    
-                    empty_common_neighbors = []
-                    if len(common_neighbors_coords) >= 2: # Need at least two common neighbors for a bridge
-                        for cn_coord in common_neighbors_coords:
-                            if self.hex_game.board[cn_coord[0]][cn_coord[1]] == 0: # Check if common neighbor is empty
-                                empty_common_neighbors.append(cn_coord)
-                    
-                    # If S_new and S_old share exactly two common empty neighbors, a bridge is formed.
-                    if len(empty_common_neighbors) == 2:
-                        intermediate_reward += self.bridge_reward_value
-                        # Note: A single move could complete multiple bridges.
-                        # This will sum rewards if multiple bridges are formed.
-                        # To reward only once per step if *any* bridge is formed, break here or set a flag.
-                        # For now, summing is fine.
-        # --- End Bridge Detection ---
-
-        self.hex_game.evaluate() # Check for game end (updates self.hex_game.winner)
-
+        # initialize rewards
+        strategic_reward = 0.0
         final_reward = 0.0
         terminated = False
         truncated = False  # Not used in this env
 
+        # Calculate strategic rewards
+        strategic_reward += self._calculate_bridge_reward(coordinates, original_player)
+        strategic_reward += self._calculate_center_control(coordinates)
+        strategic_reward += self._calculate_chain_reward(coordinates, original_player)
+        
+
+        self.hex_game.evaluate() # Check for game end (updates self.hex_game.winner)
+
 
         if self.hex_game.winner != 0:
             terminated = True
-            if self.hex_game.winner == original_player:
-                final_reward = 5.0  # Player who made the move won
-            else:
-                final_reward = -5.0  # Player who made the move lost (opponent won)
+            final_reward = 10.0 if self.hex_game.winner == original_player else -10.0 # player who made move won or opponent won
 
         # if there is an opponent policy defined
         elif not terminated and self.opponent_policy is not None and self.hex_game.player == -original_player:
@@ -112,15 +139,10 @@ class HexEnv(gym.Env):
             # check if the opponent won
             if self.hex_game.winner != 0:
                 terminated = True
-                if self.hex_game.winner == -original_player:
-                    final_reward -= 5.0  # we lost
-                else:
-                    final_reward += 5.0  # we won because of an invalid move of the opponent
+                final_reward = -10.0 if self.hex_game.winner == -original_player else 10.0 # opponent won or we won (due to illegal move or something)
 
 
-        
-        reward = final_reward + intermediate_reward
-
+        reward = final_reward + strategic_reward
         observation = self._get_obs()
         info = self._get_info()
 

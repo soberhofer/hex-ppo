@@ -16,20 +16,21 @@ TEMPERATURE = 1.4
 FINAL_TEMPERATURE = 1.0
 HEX_BOARD_SIZE = 7
 INITIAL_LEARNING_RATE = 0.01
-GAMMA = 0.99
-K_EPOCHS = 10 
-EPS_CLIP = 0.2
-GAE_LAMBDA = 0.95
-ENTROPY_COEF_INITIAL = 0.05  # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
+GAMMA = 0.997
+K_EPOCHS = 5
+EPS_CLIP = 0.15
+GAE_LAMBDA = 0.9             # bias in advantage estimates
+ENTROPY_COEF_INITIAL = 0.04  # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
+ENTROPY_COEF_FINAL = 0.01
 
 MAX_TOTAL_TIMESTEPS = 3000000  # Total timesteps to train for
-TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
+TIMESTEPS_PER_BATCH = 4096   # Timesteps to collect per batch before updating
 UPDATES_PER_EVAL = 10        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
 UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2048 steps/update = ~500k steps)
 # LR Scheduler: step_size is now in terms of number of updates
 LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
 LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
-WARMUP_EPOCHS = 50
+WARMUP_EPOCHS = 0.1 * MAX_TOTAL_TIMESTEPS # 10% of overall total steps
 
 RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of episodes
 RANDOM_OPPONENT_RATIO_2 = 0.1
@@ -38,6 +39,13 @@ NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
 
 frozen_agent_list = []
+
+class Opponents:
+    RANDOM = "random"
+    SELF = "self"
+    FROZEN_SELF= "frozen_self"
+    GREEDY="greedy"
+
 
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True  # auto-tuner for CNNs
@@ -51,15 +59,43 @@ def random_opponent_action_logic(game_engine_instance):
     chosen_coords = random.choice(action_set_tuples)
     return game_engine_instance.coordinate_to_scalar(chosen_coords)
 
-PLAYERS = {
-    -1 : "BLACK",
-    1 : "WHITE",
-}
 
-class Opponents:
-    RANDOM = "random"
-    SELF = "self"
-    FROZEN_SELF= "frozen_self"
+def greedy_action(state: np.ndarray, valid_actions: list, policy_net: torch.nn.Module, device: torch.device, env: HexEnv) -> tuple:
+    """
+    Selects the action with highest predicted probability from the policy network
+    Args:
+        state: Current Hex board state (2D numpy array)
+        valid_actions: List of valid (row,col) coordinates
+        policy_net (torch.nn.Module): The PPO actor network.
+        device (torch.device): CPU/GPU device.
+        env (HexEnv): Environment instance (needed for coordinate conversions).
+
+    Returns:
+        (row, col) coordinates of the greedy action
+    """
+    # Convert state to tensor and add batch/channel dimensions
+    state_tensor = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        # Get action probabilities from policy network
+        action_logits, _ = policy_net(state_tensor)
+        action_probs = torch.nn.functional.softmax(action_logits, dim=-1)
+
+    # Create mask for valid actions
+    action_mask = torch.zeros_like(action_probs)
+    for (row, col) in valid_actions:
+        action_index = row * env.hex_game.size + col  # Flatten 2D to 1D index
+        action_mask[0, action_index] = 1
+
+    # Apply mask and select action
+    masked_probs = action_probs * action_mask
+    best_action_index = torch.argmax(masked_probs).item()
+
+    # Convert back to 2D coordinates
+    best_row = best_action_index // env.hex_game.size
+    best_col = best_action_index % env.hex_game.size
+
+    return best_row, best_col
 
 def ppo_action_from_policy(board, valid_actions: list, policy_net: torch.nn.Module, device: torch.device, env: HexEnv):
     """
@@ -255,7 +291,7 @@ def freeze_agent_and_reset_policy(frozen_agent, agent, env, device, num_updates)
     frozen_agent = copy.deepcopy(agent)
 
     # TODO: check if this can lead to memory problems
-    if len(frozen_agent_list) == 3:
+    if len(frozen_agent_list) == 6:
         frozen_agent_list.pop(0)    # remove first, currently want to keep three agents only
 
     frozen_agent_list.append((num_updates, frozen_agent))
@@ -267,18 +303,32 @@ def ppo_turn(agent, state, valid_actions, temperature):
     action_scalar_ppo, log_prob_ppo, _ = agent.select_action(state, valid_actions, temperature)
     return action_scalar_ppo, log_prob_ppo
 
-def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: float, oppenent_ratio: float, force_first = False):
-    if with_random and rand_val < oppenent_ratio:
-        opponent_type = Opponents.RANDOM
-    elif with_periodic_self and rand_val < oppenent_ratio + 0.6 * (1 - oppenent_ratio):  # 60% of non-random
-        opponent_type = Opponents.FROZEN_SELF
-    else:
-        opponent_type = Opponents.SELF
-
+def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: float, random_opponent_ratio: float, progress: float, greedy_ratio: float, force_first = False):
     if force_first:
-        opponent_type = Opponents.FROZEN_SELF
+        return Opponents.FROZEN_SELF
 
-    return opponent_type
+    # Adjusted ratios ensure probabilities sum to 1
+    adjusted_random_ratio = random_opponent_ratio * (1 - progress)
+    frozen_self_ratio = 0.6 * (1 - adjusted_random_ratio - greedy_ratio) if with_periodic_self else 0
+    #print(f"OPPONENT RANDOM: {rand_val} / {adjusted_random_ratio}")
+    #print(f"OPPONENT FROZEN SELF: {rand_val} / {adjusted_random_ratio + frozen_self_ratio}")
+    #print(f"OPPONENT GREEDY: {rand_val} / {adjusted_random_ratio + frozen_self_ratio + greedy_ratio}")
+    #print(f"OPPONENT SELF: {rand_val} / {adjusted_random_ratio + frozen_self_ratio + greedy_ratio}")
+
+    # Decision tree
+    if with_random and rand_val < adjusted_random_ratio:
+        #print("chosen - Random")
+        return Opponents.RANDOM
+    elif rand_val < adjusted_random_ratio + frozen_self_ratio:
+        #print("chosen - Frozen")
+        return Opponents.FROZEN_SELF
+    elif rand_val < adjusted_random_ratio + frozen_self_ratio + greedy_ratio:
+        print("chosen - Greedy")
+        return Opponents.GREEDY
+    else:
+        #print("chosen - self")
+        return Opponents.SELF
+
 
 def get_device():
     if torch.cuda.is_available():
@@ -330,12 +380,33 @@ def get_temperature(total_timesteps_collected):
     return FINAL_TEMPERATURE + (TEMPERATURE - FINAL_TEMPERATURE) * np.exp(-5 * progress)
 
 
+def get_random_opp_prob(current_step, initial_prob=RANDOM_OPPONENT_RATIO):
+    # start at RANDOM_OPPONENT_RATIO, decrease over time
+    return initial_prob * (1 - current_step / MAX_TOTAL_TIMESTEPS)
+
+
+def get_entropy_coef(current_step, initial=ENTROPY_COEF_INITIAL, final=ENTROPY_COEF_FINAL):
+    # entropy coeff annealing --> supports more exploration in the beginning, reduced throughout training
+    return initial - (initial - final) * (current_step / MAX_TOTAL_TIMESTEPS)
+
+
+def get_ratios(total_timesteps_collected: int):
+    # Determine opponent for the new episode
+    rand_val = random.random()
+    random_ratio = get_random_opp_prob(total_timesteps_collected)
+    # Calculate dynamic greedy ratio (increases as random decreases)
+    progress = min(total_timesteps_collected / MAX_TOTAL_TIMESTEPS, 1.0)
+    greedy_ratio = (1 - random_ratio) * progress  # Scales from 0 up
+    return rand_val, random_ratio, progress, greedy_ratio
+
 def train(with_periodic_self: bool = True, with_random: bool = True):
     device = get_device()
     env = HexEnv(size=HEX_BOARD_SIZE)
     obs_shape = env.observation_space.shape
     action_space_size = env.action_space.n
-    agent = PPOAgent(obs_shape, action_space_size, INITIAL_LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device, ENTROPY_COEF_INITIAL, torch.cuda.is_available())
+    agent = PPOAgent(obs_shape, action_space_size, INITIAL_LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device,
+                     torch.cuda.is_available())
+
     memory = RolloutMemory()
 
     if with_periodic_self:
@@ -364,12 +435,11 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
     state, info = env.reset()
     current_episode_reward_accumulator = 0.0
 
-    # Determine opponent for the new episode
-    rand_val = random.random()
-    opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, RANDOM_OPPONENT_RATIO)
+    rand_val, random_ratio, progress, greedy_ratio = get_ratios(total_timesteps_collected)
+    opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, progress, greedy_ratio)
 
     ppo_agent_player_id = 1 # Default, will be set if opponent is random
-    if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF]:
+    if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF, Opponents.GREEDY]:
         ppo_agent_player_id = random.choice([1, -1])
 
     while total_timesteps_collected < MAX_TOTAL_TIMESTEPS:
@@ -402,6 +472,10 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                 #print("RANDOM OPPONENT ")
                 action_scalar_to_env = random_opponent_action_logic(env.hex_game)
 
+            elif opponent_type == Opponents.GREEDY:
+                print("GREEDY OPPONENT ")
+                action_scalar_to_env = greedy_action(state, valid_actions, agent.policy, device, env)
+
             else:
                 print("ERROR: This state should never be reached.")
 
@@ -428,12 +502,10 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                 rand_val = random.random()
 
                 # Determine opponent for the new episode
-                if total_timesteps_collected >= MAX_TOTAL_TIMESTEPS/2:
-                    random_opponent_ratio = RANDOM_OPPONENT_RATIO_2
-                else:
-                    random_opponent_ratio = RANDOM_OPPONENT_RATIO
-                opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_opponent_ratio)
-                if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF]:
+                rand_val, random_ratio, progress, greedy_ratio = get_ratios(total_timesteps_collected)
+                opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, progress, greedy_ratio)
+
+                if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF, Opponents.GREEDY]:
                     ppo_agent_player_id = random.choice([1, -1])
 
             if total_timesteps_collected >= MAX_TOTAL_TIMESTEPS:
@@ -443,8 +515,9 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
         # ---- update training
         if len(memory.states) > 0:
+            entropy_coef = get_entropy_coef(total_timesteps_collected)
 
-            p_loss, v_loss, ent, combined_loss = agent.update(memory)
+            p_loss, v_loss, ent, combined_loss = agent.update(memory, entropy_coef)
             memory.clear_memory()
             num_updates += 1
 

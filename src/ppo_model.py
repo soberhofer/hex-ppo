@@ -11,29 +11,78 @@ class ActorCritic(nn.Module):
         board_size = obs_shape[0]
 
         # Convolutional layers for feature extraction
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        #self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
+        #self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+
+        # test bigger network
+        self.conv1 = nn.Conv2d(1, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+
         
         # 1x1 Convolution for the residual connection to match channel dimensions
-        self.residual_projection = nn.Conv2d(1, 64, kernel_size=1, stride=1, padding=0)
+        # self.residual_projection = nn.Conv2d(1, 64, kernel_size=1, stride=1, padding=0)
+
+        # convolution residual layer
+        self.residual = nn.Conv2d(1, 128, kernel_size=1)  # Projection for skip
+
 
         # Calculate the output size of the convolutional layers
         # The size remains the same due to padding=1 and stride=1
-        conv_output_size = 64 * board_size * board_size
+        # conv_output_size = 64 * board_size * board_size
+        # conv_output_size_wo_attention_pooling = 128 * board_size ** 2
+        conv_output_size = 128 # with attention pooling
+
+        # Attention pooling
+        self.attention = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.SiLU(),
+            nn.Linear(64, 1),
+            nn.Softmax(dim=1)
+        )
 
         # Actor (Policy) network
-        self.actor_fc1 = nn.Linear(conv_output_size, 256)
-        self.actor_fc2 = nn.Linear(256, action_space_size)
+        #self.actor_fc1 = nn.Linear(conv_output_size, 256)
+        #self.actor_fc2 = nn.Linear(256, action_space_size)
+
+        self.actor = nn.Sequential(
+            nn.Linear(conv_output_size, 512),
+            nn.SiLU(),
+            nn.Linear(512, action_space_size))
 
         # Critic (Value) network
-        self.critic_fc1 = nn.Linear(conv_output_size, 256)
-        self.critic_fc2 = nn.Linear(256, 1)
+        #self.critic_fc1 = nn.Linear(conv_output_size, 256)
+        #self.critic_fc2 = nn.Linear(256, 1)
 
+        self.critic = nn.Sequential(
+            nn.Linear(conv_output_size, 512),
+            nn.SiLU(),
+            nn.Linear(512, 1))
+
+    def forward(self, x):
+        # Residual Conv Block
+        residual = self.residual(x)
+        x = F.silu(self.conv1(x))
+        x = F.silu(self.conv2(x))
+        x = self.conv3(x) + residual  # Skip connection
+
+        # Attention Pooling (optional)
+        batch, channels, h, w = x.shape
+        x_flat = x.view(batch, channels, -1).permute(0, 2, 1)
+        attn = self.attention(x_flat)
+        x = (x_flat * attn).sum(dim=1)
+
+        # Heads
+        policy = self.actor(x)
+        value = self.critic(x)
+        return policy, value
+
+    """
     def forward(self, obs):
         # obs is expected to be (batch_size, 1, board_size, board_size)
         # Ensure it's float
         obs_float = obs.float() # Use a different variable name to keep original obs for residual
-        
+
         # Main path
         x = F.silu(self.conv1(obs_float))
         x = F.silu(self.conv2(x))
@@ -55,6 +104,7 @@ class ActorCritic(nn.Module):
         value = self.critic_fc2(critic_hidden)
 
         return action_logits, value
+    """
 
     def act(self, obs):
         action_logits, value = self.forward(obs)
