@@ -75,7 +75,29 @@ class ActorCritic(nn.Module):
 
         return policy, value
 
+    def act(self, obs):
+        action_logits, value = self.forward(obs)
 
+        # Mask invalid actions (assuming invalid actions are represented by -inf or very small negative numbers in logits)
+        # This part needs to be handled carefully. For now, assuming all actions in action_space are valid.
+        # If invalid actions need to be masked, the environment should provide a mask.
+
+        probs = F.softmax(action_logits, dim=-1)
+        dist = Categorical(probs)
+        action = dist.sample()
+
+        return action.item(), dist.log_prob(action), value
+
+    def evaluate(self, obs, action):
+        action_logits, value = self.forward(obs)
+
+        probs = F.softmax(action_logits, dim=-1)
+        dist = Categorical(probs)
+
+        action_log_probs = dist.log_prob(action)
+        dist_entropy = dist.entropy().mean()  # Ensure entropy is a scalar
+
+        return action_log_probs, value, dist_entropy
 
 
 class ActorCriticOld(nn.Module):
