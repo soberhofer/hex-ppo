@@ -436,7 +436,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
     agent = PPOAgent(obs_shape, action_space_size, INITIAL_LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device,
                      torch.cuda.is_available())
 
-    memory = RolloutMemory()
+    memory = RolloutMemory(device)
 
     if with_periodic_self:
         frozen_agent = copy.deepcopy(agent)

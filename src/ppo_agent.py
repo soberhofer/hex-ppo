@@ -136,12 +136,13 @@ class PPOAgent:
         return advantages
 
 class RolloutMemory:
-    def __init__(self):
+    def __init__(self, device):
         self.states = []
         self.actions = []
         self.logprobs = []
         self.rewards = []
         self.is_terminals = []
+        self.device = device
 
     def clear_memory(self):
         del self.states[:]
@@ -152,8 +153,8 @@ class RolloutMemory:
 
     def add(self, state, action, log_prob, reward, is_terminal):
         # Store tensors on CPU, move to device during update
-        self.states.append(torch.tensor(state, dtype=torch.float32))
-        self.actions.append(torch.tensor(action))
-        self.logprobs.append(torch.tensor(log_prob))
-        self.rewards.append(torch.tensor(reward, dtype=torch.float32))
-        self.is_terminals.append(torch.tensor(is_terminal, dtype=torch.bool))
+        self.states.append(torch.tensor(state, dtype=torch.float32, device=self.device))
+        self.actions.append(torch.tensor(action, device=self.device))
+        self.logprobs.append(torch.tensor(log_prob, device=self.device))
+        self.rewards.append(torch.tensor(reward, dtype=torch.float32, device=self.device))
+        self.is_terminals.append(torch.tensor(is_terminal, dtype=torch.bool, device=self.device))
