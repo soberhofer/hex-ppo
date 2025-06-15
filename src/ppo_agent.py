@@ -62,7 +62,7 @@ class PPOAgent:
     def update(self, memory):
 
         # entropy coeff annealing --> supports more exploration in the beginning, reduced throughout training
-        self.entropy_coef = max(1e-4, self.entropy_coef * 0.95)
+        self.entropy_coef = max(1e-4, self.entropy_coef * 0.9)
 
         # Convert lists to tensors, add channel dimension, and move to device
         old_states = torch.stack(memory.states).float().unsqueeze(1).to(self.device)

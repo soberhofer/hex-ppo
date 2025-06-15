@@ -48,7 +48,7 @@ class HexEnv(gym.Env):
         # Make the move
         self.hex_game.move(coordinates) # board is updated here, self.hex_game.player is flipped
 
-        intermediate_reward = 0.0
+        intermediate_reward = 0.1
         
         # --- Bridge Detection ---
         # The stone just placed is at 'coordinates' by 'original_player'.
