@@ -1,5 +1,4 @@
 import torch
-import gymnasium as gym
 from src.hex_env import HexEnv
 from src.ppo_agent import PPOAgent, RolloutMemory
 from src.ppo_model import ActorCritic # For evaluation
