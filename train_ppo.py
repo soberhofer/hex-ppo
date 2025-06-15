@@ -19,8 +19,8 @@ GAMMA = 0.997
 K_EPOCHS = 5
 EPS_CLIP = 0.15
 GAE_LAMBDA = 0.9             # bias in advantage estimates
-ENTROPY_COEF_INITIAL = 0.04  # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
-ENTROPY_COEF_FINAL = 0.01
+ENTROPY_COEF_INITIAL = 0.03 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
+ENTROPY_COEF_FINAL = 0.001
 
 MAX_TOTAL_TIMESTEPS = 3000000  # Total timesteps to train for
 TIMESTEPS_PER_BATCH = 4096   # Timesteps to collect per batch before updating
@@ -32,7 +32,6 @@ LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
 WARMUP_EPOCHS = 0.1 * MAX_TOTAL_TIMESTEPS # 10% of overall total steps
 
 RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of episodes
-RANDOM_OPPONENT_RATIO_2 = 0.1
 
 NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
