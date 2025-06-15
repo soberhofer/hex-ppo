@@ -16,9 +16,9 @@ FINAL_TEMPERATURE = 1.0
 HEX_BOARD_SIZE = 7
 INITIAL_LEARNING_RATE = 0.001 # this is the learning rate up until linear warm up goes
 GAMMA = 0.99
-K_EPOCHS = 5
-EPS_CLIP = 0.15
-GAE_LAMBDA = 0.9             # bias in advantage estimates
+K_EPOCHS = 10
+EPS_CLIP = 0.2
+GAE_LAMBDA = 0.95           # bias in advantage estimates
 ENTROPY_COEF_INITIAL = 0.03 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
 ENTROPY_COEF_FINAL = 0.001
 
