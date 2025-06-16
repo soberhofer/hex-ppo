@@ -261,10 +261,14 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
         update_best_agent_stats(win_rate, time_steps_collected, Opponents.FROZEN_SELF+agent, agent)
 
     rate = 0
+    count = 0
     for key, items in best_results_for_each_agent.items():
+        print(items['win_rate'])
+        count += 1
         rate += items['win_rate']
 
-    rate = rate / len(best_results_for_each_agent)
+    print("elements in best results", count)
+    rate = rate / count
     print("Win rate overall: ", rate)
     if rate > win_rate_best:
         save_model(ppo_policy_net, time_steps_collected)
