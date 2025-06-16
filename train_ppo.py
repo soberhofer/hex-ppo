@@ -151,14 +151,14 @@ def ppo_action_from_policy(board, valid_actions: list, policy_net: torch.nn.Modu
         return action_coords
 
 
-def save_model(agent, num_updates):
-    model_path = os.path.join(MODEL_DIR, f"ppo_hex_agent_update_{num_updates}.pth")
+def save_model(agent, num_updates, specific_agent = ""):
+    model_path = os.path.join(MODEL_DIR, f"ppo_hex_agent_update_{num_updates}{specific_agent}.pth")
     torch.save(agent.state_dict(), model_path)
     print(f"Model saved to {model_path}")
 
 best_results_for_each_agent = {}
 
-def update_best_agent_stats(random_win_rate: float, timesteps_collected: int, current_agent: str, agent_key: str) -> None:
+def update_best_agent_stats(random_win_rate: float, timesteps_collected: int, current_agent: str, agent_key: str, ppo_policy_net = None) -> None:
     if agent_key not in best_results_for_each_agent:
         best_results_for_each_agent[agent_key] = {
             "win_rate": 0.0,
@@ -172,6 +172,7 @@ def update_best_agent_stats(random_win_rate: float, timesteps_collected: int, cu
         best_results_for_each_agent[agent_key]["agent"] = current_agent
         best_results_for_each_agent[agent_key]["timesteps"] = timesteps_collected
         best_results_for_each_agent[agent_key]["updates"] += 1
+        save_model(ppo_policy_net, timesteps_collected, "_best_against_current_agent")
 
 win_rate_best = 0
 def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: int, num_games=100):
@@ -267,11 +268,11 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
         count += 1
         rate += items['win_rate']
 
-    print("elements in best results", count)
+    # print("elements in best results", count)
     rate = rate / count
     print("Win rate overall: ", rate)
     if rate > win_rate_best:
-        save_model(ppo_policy_net, time_steps_collected)
+        save_model(ppo_policy_net, time_steps_collected, "_overall")
 
     print("--- Evaluation Finished ---\n")
     ppo_policy_net.train()
