@@ -403,12 +403,12 @@ def get_scheduler(agent):
     )
     return warmup_scheduler, plateau_scheduler
 
-def update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, v_loss, avg_reward):
+def update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, loss, avg_reward):
     if num_updates < WARMUP_EPOCHS:
         warmup_scheduler.step()
     else:
         # plateau scheduler needs step
-        plateau_scheduler.step(avg_reward)
+        plateau_scheduler.step(loss)
     # lr_scheduler.step()
 
 def get_temperature(total_timesteps_collected):
@@ -591,7 +591,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                     avg_ep_reward_str = f", Avg Ep Reward (last ~{lookback_episodes}): {avg_recent_ep_reward:.2f}"
 
                 print(f"Update {num_updates}, Timesteps: {total_timesteps_collected}, LR: {current_lr:.7f}{avg_ep_reward_str}")
-                print(f"  Losses: Policy: {p_loss:.4f}, Value: {v_loss:.4f}, Entropy: {ent:.4f}")
+                print(f"  Losses: Policy: {p_loss:.4f}, Value: {v_loss:.4f}")#, Entropy: {ent:.4f}")
 
             # --- periodic evaluation
             if num_updates > 0 and num_updates % UPDATES_PER_EVAL == 0:
