@@ -120,7 +120,7 @@ class HexEnv(gym.Env):
 
         # Normalized reward based on distance from center
         #print("Center control ", max(0, 0.2 * (1 - distance / center)))
-        return max(0, 0.2 * (1 - distance / center))
+        return max(0, 0.2 * (1 - distance / center)) # max 0.2
 
     def _calculate_chain_reward(self, new_stone, player):
         """Rewards creating longer connected stone groups"""
@@ -143,10 +143,10 @@ class HexEnv(gym.Env):
 
         # Scaling reward (capped at 5 stones) - max 0.5
         # print("Chain length: {}".format(chain_length))
-        return 0.1 * min(chain_length, 5)
+        return 0.15 * min(chain_length, 5) # max 0.15 * 5
 
     def get_final_reward(self, original_player):
-        return 3.0 if self.hex_game.winner == original_player else -3.0
+        return 5.0 if self.hex_game.winner == original_player else -5.0
 
     def step(self, action):
         coordinates = self.hex_game.scalar_to_coordinates(action)

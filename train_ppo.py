@@ -19,7 +19,7 @@ GAMMA = 0.99
 K_EPOCHS = 10
 EPS_CLIP = 0.2
 GAE_LAMBDA = 0.95           # bias in advantage estimates
-ENTROPY_COEF_INITIAL = 0.03 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
+ENTROPY_COEF_INITIAL = 0.02 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
 ENTROPY_COEF_FINAL = 0.001
 
 MAX_TOTAL_TIMESTEPS = 5000000  # Total timesteps to train for
@@ -430,8 +430,8 @@ def get_ratios(total_timesteps_collected: int):
 
     remaining = max(0.0, 1.0 - random_ratio - greedy_ratio)
 
-    self_ratio = 0.3 * remaining
-    frozen_ratio = 0.7 * remaining
+    self_ratio = 0.4 * remaining
+    frozen_ratio = 0.6 * remaining
 
     rand_val = random.random()
     return rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio
@@ -536,7 +536,6 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                 all_episode_rewards.append(current_episode_reward_accumulator)
                 current_episode_reward_accumulator = 0.0 
                 state, info = env.reset()
-                rand_val = random.random()
 
                 # Determine opponent for the new episode
                 rand_val, random_ratio, progress, greedy_ratio, frozen_ratio = get_ratios(total_timesteps_collected)
@@ -592,7 +591,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
             # --- periodic replacement with frozen snapshot --> updates the opponent, so that it gets smarter too
             if with_periodic_self:
-                if num_updates % 200 == 0:
+                if num_updates % 150 == 0:
                     print("Replacing current frozen_self with updated version")
                     freeze_agent_and_reset_policy(frozen_agent, agent, env, device, num_updates)
 

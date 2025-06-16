@@ -6,11 +6,11 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 
 
-class ResidualBlock(nn.Module):
+class ResidualBlock40(nn.Module):
     """Residual block for ResNet architecture"""
 
     def __init__(self, channels: int):
-        super(ResidualBlock, self).__init__()
+        super(ResidualBlock40, self).__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(channels)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
@@ -24,10 +24,10 @@ class ResidualBlock(nn.Module):
         out = F.leaky_relu(out)
         return out
 
-class ActorCritic(nn.Module):
+class ActorCriticResnet40(nn.Module):
     """ Actor Critic with Resnet 40 Architecture """
     def __init__(self, obs_shape: Tuple[int, int], action_space_size: int, num_channels: int = 256):
-        super(ActorCritic, self).__init__()
+        super(ActorCriticResnet40, self).__init__()
 
         board_size = obs_shape[0]
         self.board_size = board_size
@@ -39,7 +39,7 @@ class ActorCritic(nn.Module):
 
         # 39 residual blocks (40 layers total including input conv)
         self.residual_blocks = nn.ModuleList([
-            ResidualBlock(num_channels) for _ in range(39)
+            ResidualBlock40(num_channels) for _ in range(39)
         ])
 
         # Policy head
@@ -100,64 +100,76 @@ class ActorCritic(nn.Module):
         return action_log_probs, value, dist_entropy
 
 
-class ActorCriticOld(nn.Module):
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride, 1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.LeakyReLU(inplace=True)
+        #self.relu = nn.SiLU(inplace=True) # https://www.ultralytics.com/glossary/silu-sigmoid-linear-unit#:~:text=SiLU%20offers%20several%20advantages%20that,leading%20to%20more%20stable%20training.
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.skip = nn.Conv2d(in_channels, out_channels, 1, stride) if stride > 1 or in_channels != out_channels else nn.Identity()
+
+    def forward(self, x):
+        identity = self.skip(x)
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += identity
+        return self.relu(out)
+
+
+class ActorCritic(nn.Module):
     def __init__(self, obs_shape, action_space_size):
-        super(ActorCriticOld, self).__init__()
+        super(ActorCritic, self).__init__()
         
         # Assuming obs_shape is (board_size, board_size)
         board_size = obs_shape[0]
 
         # Convolutional layers for feature extraction
-        #self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
-        #self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.sequential = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(inplace=True),
 
-        # test bigger network
-        self.conv1 = nn.Conv2d(1, 64, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
-
-        
-        # 1x1 Convolution for the residual connection to match channel dimensions
-        # self.residual_projection = nn.Conv2d(1, 64, kernel_size=1, stride=1, padding=0)
-
-        # convolution residual layer
-        self.residual = nn.Conv2d(1, 128, kernel_size=1)  # Projection for skip
-
+            # convolution residual layer
+            ResidualBlock(64, 128, stride=1),  # with downsampling
+            ResidualBlock(128, 128, stride=1),  # without downsampling
+            ResidualBlock(128, 256, stride=1),  # with downsampling
+        )
 
         # Calculate the output size of the convolutional layers
         # The size remains the same due to padding=1 and stride=1
         # conv_output_size = 64 * board_size * board_size
-        conv_output_size = 128 * board_size ** 2 # without attention pooling
+        conv_output_size = 256 * board_size ** 2 # without attention pooling
         # conv_output_size = 128 # with attention pooling
 
-        # Actor (Policy) network
-        #self.actor_fc1 = nn.Linear(conv_output_size, 256)
-        #self.actor_fc2 = nn.Linear(256, action_space_size)
-
         self.actor = nn.Sequential(
+            nn.Dropout(0.2),
             nn.Linear(conv_output_size, 512),
-            nn.SiLU(),
-            nn.Linear(512, action_space_size))
-
-        # Critic (Value) network
-        #self.critic_fc1 = nn.Linear(conv_output_size, 256)
-        #self.critic_fc2 = nn.Linear(256, 1)
+            nn.LeakyReLU(inplace=True),
+            nn.Linear(512, action_space_size)
+        )
 
         self.critic = nn.Sequential(
+            nn.Dropout(0.2),
             nn.Linear(conv_output_size, 512),
-            nn.SiLU(),
-            nn.Linear(512, 1))
+            nn.LeakyReLU(inplace=True),
+            nn.Linear(512, 1)
+        )
 
     def forward(self, x):
-        # Residual Conv Block
-        residual = self.residual(x)
-        x = F.silu(self.conv1(x))
-        x = F.silu(self.conv2(x))
-        x = self.conv3(x) + residual  # Skip connection
-        x = F.silu(x)  # Apply silu after adding residual
+        x = self.sequential(x)
 
-        x = x.view(x.size(0), -1)
-
+        x = x.view(x.size(0), -1) # Flatten all dimensions except batch
 
         # Heads
         policy = self.actor(x)
