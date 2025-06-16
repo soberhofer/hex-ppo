@@ -27,8 +27,8 @@ TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
 UPDATES_PER_EVAL = 10        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
 UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2048 steps/update = ~500k steps)
 # LR Scheduler: step_size is now in terms of number of updates
-LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
-LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
+#LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
+#LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
 WARMUP_EPOCHS = int(0.05 * MAX_TOTAL_TIMESTEPS) # 5% of overall total steps
 
 RANDOM_OPPONENT_RATIO = 0.3 # Play against random opponent for this fraction of episodes in the beginning
@@ -150,6 +150,12 @@ def ppo_action_from_policy(board, valid_actions: list, policy_net: torch.nn.Modu
             action_coords = env.hex_game.scalar_to_coordinates(action_scalar)
         return action_coords
 
+
+def save_model(agent, num_updates):
+    model_path = os.path.join(MODEL_DIR, f"ppo_hex_agent_update_{num_updates}.pth")
+    torch.save(agent.state_dict(), model_path)
+    print(f"Model saved to {model_path}")
+
 best_results_for_each_agent = {}
 
 def update_best_agent_stats(random_win_rate: float, timesteps_collected: int, current_agent: str, agent_key: str) -> None:
@@ -167,7 +173,7 @@ def update_best_agent_stats(random_win_rate: float, timesteps_collected: int, cu
         best_results_for_each_agent[agent_key]["timesteps"] = timesteps_collected
         best_results_for_each_agent[agent_key]["updates"] += 1
 
-
+win_rate_best = 0
 def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: int, num_games=100):
     """
     Evaluate against 50 random games and 50 x agents in frozen_agents games against frozen agents
@@ -253,6 +259,15 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
               f"{wins} / {games} wins ({win_rate:.2f})")
 
         update_best_agent_stats(win_rate, time_steps_collected, Opponents.FROZEN_SELF+agent, agent)
+
+    rate = 0
+    for key, items in best_results_for_each_agent.items():
+        rate += items['win_rate']
+
+    rate = rate / len(best_results_for_each_agent)
+    print("Win rate overall: ", rate)
+    if rate > win_rate_best:
+        save_model(ppo_policy_net, time_steps_collected)
 
     print("--- Evaluation Finished ---\n")
     ppo_policy_net.train()
@@ -580,7 +595,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
             # --- periodic evaluation
             if num_updates > 0 and num_updates % UPDATES_PER_EVAL == 0:
-                evaluate_mixed(agent.policy, device, env, total_timesteps_collected )
+                evaluate_mixed(agent.policy, device, env, num_updates)
                 #evaluate_against_random(agent.policy, device, env, NUM_EVAL_GAMES)
 
             # --- periodic model saving
@@ -610,3 +625,4 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
 if __name__ == '__main__':
     train()
+

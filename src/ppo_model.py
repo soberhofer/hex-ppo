@@ -142,28 +142,28 @@ class ActorCritic(nn.Module):
 
             # convolution residual layer
             ResidualBlock(64, 128, stride=1),  # with downsampling
-            ResidualBlock(128, 128, stride=1),  # without downsampling
-            ResidualBlock(128, 256, stride=1),  # with downsampling
+            #ResidualBlock(128, 128, stride=1),  # without downsampling
+            #ResidualBlock(128, 256, stride=1),  # with downsampling
         )
 
         # Calculate the output size of the convolutional layers
         # The size remains the same due to padding=1 and stride=1
         # conv_output_size = 64 * board_size * board_size
-        conv_output_size = 256 * board_size ** 2 # without attention pooling
+        conv_output_size = 128 * board_size ** 2 # without attention pooling
         # conv_output_size = 128 # with attention pooling
 
         self.actor = nn.Sequential(
-            nn.Dropout(0.2),
-            nn.Linear(conv_output_size, 512),
+            #nn.Dropout(0.2),
+            nn.Linear(conv_output_size, 256),
             nn.LeakyReLU(inplace=True),
-            nn.Linear(512, action_space_size)
+            nn.Linear(256, action_space_size)
         )
 
         self.critic = nn.Sequential(
-            nn.Dropout(0.2),
-            nn.Linear(conv_output_size, 512),
+            #nn.Dropout(0.2),
+            nn.Linear(conv_output_size, 256),
             nn.LeakyReLU(inplace=True),
-            nn.Linear(512, 1)
+            nn.Linear(256, 1)
         )
 
     def forward(self, x):
