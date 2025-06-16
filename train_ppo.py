@@ -264,7 +264,7 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
     rate = 0
     count = 0
     for key, items in best_results_for_each_agent.items():
-        print(items['win_rate'])
+        #print(items['win_rate'])
         count += 1
         rate += items['win_rate']
 
