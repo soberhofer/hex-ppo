@@ -247,7 +247,7 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
     print(f"Random Opponent: {random_wins} / {random_games} wins "
           f"({random_win_rate:.2f})")
 
-    update_best_agent_stats(random_win_rate, time_steps_collected, Opponents.RANDOM, Opponents.RANDOM)
+    update_best_agent_stats(random_win_rate, time_steps_collected, Opponents.RANDOM, Opponents.RANDOM, ppo_policy_net)
 
     agents = [agent[0] for agent in frozen_agent_list]
     for i, frozen_stat in enumerate(stats[Opponents.FROZEN_SELF]):
@@ -259,7 +259,7 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
         print(f"Frozen Agent {agent}: "
               f"{wins} / {games} wins ({win_rate:.2f})")
 
-        update_best_agent_stats(win_rate, time_steps_collected, Opponents.FROZEN_SELF+agent, agent)
+        update_best_agent_stats(win_rate, time_steps_collected, Opponents.FROZEN_SELF+agent, agent, ppo_policy_net)
 
     rate = 0
     count = 0
