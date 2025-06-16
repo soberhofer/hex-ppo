@@ -151,8 +151,8 @@ def ppo_action_from_policy(board, valid_actions: list, policy_net: torch.nn.Modu
         return action_coords
 
 
-def save_model(agent, num_updates, specific_agent = ""):
-    model_path = os.path.join(MODEL_DIR, f"ppo_hex_agent_update_{num_updates}{specific_agent}.pth")
+def save_model(agent, num_updates, win_rate, specific_agent = ""):
+    model_path = os.path.join(MODEL_DIR, f"ppo_hex_agent_update_{num_updates}{specific_agent}_{win_rate}.pth")
     torch.save(agent.state_dict(), model_path)
     print(f"Model saved to {model_path}")
 
@@ -172,7 +172,7 @@ def update_best_agent_stats(random_win_rate: float, timesteps_collected: int, cu
         best_results_for_each_agent[agent_key]["agent"] = current_agent
         best_results_for_each_agent[agent_key]["timesteps"] = timesteps_collected
         best_results_for_each_agent[agent_key]["updates"] += 1
-        save_model(ppo_policy_net, timesteps_collected, f"_best_against_{current_agent}")
+        save_model(ppo_policy_net, timesteps_collected, random_win_rate, f"_best_against_{current_agent}")
 
 win_rate_best = 0
 def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: int, num_games=100):
@@ -250,17 +250,20 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
     update_best_agent_stats(random_win_rate, time_steps_collected, Opponents.RANDOM, Opponents.RANDOM, ppo_policy_net)
 
     agents = [agent[0] for agent in frozen_agent_list]
+    current_win_rate_frozen = 0
     for i, frozen_stat in enumerate(stats[Opponents.FROZEN_SELF]):
 
         wins, games = frozen_stat["wins"], frozen_stat["games"]
         win_rate = wins / max(1, games)
         agent = str(agents[i])
+        current_win_rate_frozen += win_rate
 
         print(f"Frozen Agent {agent}: "
               f"{wins} / {games} wins ({win_rate:.2f})")
 
         update_best_agent_stats(win_rate, time_steps_collected, Opponents.FROZEN_SELF+agent, agent, ppo_policy_net)
 
+    current_win_rate = (current_win_rate_frozen + random_win_rate)/ (len(agents) + 1)
     rate = 0
     count = 0
     for key, items in best_results_for_each_agent.items():
@@ -270,9 +273,14 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
 
     # print("elements in best results", count)
     rate = rate / count
-    print("Win rate overall: ", rate)
+
+    print("Best Win rate overall: ", rate)
+    print("Current win rate overall: ", current_win_rate)
+    print("")
+    global win_rate_best
     if rate > win_rate_best:
-        save_model(ppo_policy_net, time_steps_collected, "_overall")
+        win_rate_best = rate
+        save_model(ppo_policy_net, time_steps_collected, win_rate_best,"_overall")
 
     print("--- Evaluation Finished ---\n")
     ppo_policy_net.train()
