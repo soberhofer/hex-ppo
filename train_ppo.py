@@ -172,7 +172,7 @@ def update_best_agent_stats(random_win_rate: float, timesteps_collected: int, cu
         best_results_for_each_agent[agent_key]["agent"] = current_agent
         best_results_for_each_agent[agent_key]["timesteps"] = timesteps_collected
         best_results_for_each_agent[agent_key]["updates"] += 1
-        save_model(ppo_policy_net, timesteps_collected, "_best_against_current_agent")
+        save_model(ppo_policy_net, timesteps_collected, f"_best_against_{current_agent}")
 
 win_rate_best = 0
 def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: int, num_games=100):
