@@ -44,6 +44,12 @@ class Opponents:
     FROZEN_SELF= "frozen_self"
     GREEDY="greedy"
 
+opponent_counts = {
+    Opponents.RANDOM: 0,
+    Opponents.SELF: 0,
+    Opponents.FROZEN_SELF: 0,
+    Opponents.GREEDY: 0,
+}
 
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True  # auto-tuner for CNNs
@@ -240,30 +246,29 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
             stats[Opponents.FROZEN_SELF][idx]["games"] += 1
 
     # --- Report results ---
-    print("\n--- Evaluation Results ---")
+    print("--- Evaluation Results ---")
 
     random_wins, random_games = stats[Opponents.RANDOM]["wins"], stats[Opponents.RANDOM]["games"]
     random_win_rate = random_wins / max(1, random_games)
-    print(f"Random Opponent: {random_wins} / {random_games} wins "
-          f"({random_win_rate:.2f})")
+    print(f"Random Opponent: {random_wins} / {random_games} wins ({random_win_rate:.2f})")
 
     update_best_agent_stats(random_win_rate, time_steps_collected, Opponents.RANDOM, Opponents.RANDOM, ppo_policy_net)
 
     agents = [agent[0] for agent in frozen_agent_list]
     current_win_rate_frozen = 0
     for i, frozen_stat in enumerate(stats[Opponents.FROZEN_SELF]):
-
         wins, games = frozen_stat["wins"], frozen_stat["games"]
         win_rate = wins / max(1, games)
         agent = str(agents[i])
         current_win_rate_frozen += win_rate
 
-        print(f"Frozen Agent {agent}: "
-              f"{wins} / {games} wins ({win_rate:.2f})")
+        print(f"Frozen Agent {agent}: {wins} / {games} wins ({win_rate:.2f})")
 
         update_best_agent_stats(win_rate, time_steps_collected, Opponents.FROZEN_SELF+agent, agent, ppo_policy_net)
 
-    current_win_rate = round((current_win_rate_frozen + random_win_rate)/ (len(agents) + 1), 2)
+    #print(current_win_rate_frozen + random_win_rate)
+    #print(len(frozen_agent_list) +1 )
+    #current_win_rate = round((current_win_rate_frozen + random_win_rate)/ (len(frozen_agent_list) + 1), 2)
     rate = 0
     count = 0
     for key, items in best_results_for_each_agent.items():
@@ -274,10 +279,10 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
     # print("elements in best results", count)
     rate = round(rate / count,2)
 
-    print("Best Win rate overall: ", rate)
-    print("Current win rate overall: ", current_win_rate)
-    print("")
     global win_rate_best
+    print("Best Win rate overall: ", win_rate_best)
+    print("Current win rate overall: ", rate)
+    print("Played opponents count so far: ", opponent_counts)
     if rate > win_rate_best:
         win_rate_best = rate
         save_model(ppo_policy_net, time_steps_collected, win_rate_best,"_overall")
@@ -312,14 +317,25 @@ def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: fl
     random_cutoff = random_opponent_ratio
     frozen_cutoff = random_cutoff + frozen_self_ratio
     greedy_cutoff = frozen_cutoff + greedy_ratio
+    #print(rand_val, random_ratio, greedy_ratio, self_ratio, frozen_ratio)
 
-    if with_random and rand_val < random_cutoff:
+    #print(rand_val, random_opponent_ratio, frozen_self_ratio, greedy_ratio, self_ratio)
+
+    if with_random and rand_val < random_cutoff and random_opponent_ratio != 0.0:
+        #print("CHOOSE RANDOM")
+        opponent_counts[Opponents.RANDOM] += 1
         return Opponents.RANDOM
     elif with_periodic_self and rand_val < frozen_cutoff:
+        #print("CHOOSE PERIODIC")
+        opponent_counts[Opponents.FROZEN_SELF] += 1
         return Opponents.FROZEN_SELF
-    elif rand_val < greedy_cutoff:
+    elif rand_val < greedy_cutoff and greedy_ratio != 0.0:
+        #print("CHOOSE GREEDY")
+        opponent_counts[Opponents.GREEDY] += 1
         return Opponents.GREEDY
     else:
+        #print("CHOOSE SELF")
+        opponent_counts[Opponents.SELF] += 1
         return Opponents.SELF
 
 
@@ -386,11 +402,12 @@ def get_entropy_coef(current_step, initial=ENTROPY_COEF_INITIAL, final=ENTROPY_C
 def get_ratios(total_timesteps_collected: int):
     # Determine opponent for the new episode
     progress = min(total_timesteps_collected / MAX_TOTAL_TIMESTEPS, 1.0)
+    #print(progress)
 
-    if progress < 1/3:
+    if progress < 0.33:
         random_ratio = RANDOM_OPPONENT_RATIO
         greedy_ratio = 0.0
-    elif progress < 2/3:
+    elif progress < 0.66:
         random_ratio = RANDOM_OPPONENT_RATIO / 2
         greedy_ratio = RANDOM_OPPONENT_RATIO / 2
     else:
@@ -401,8 +418,8 @@ def get_ratios(total_timesteps_collected: int):
 
     self_ratio = 0.4 * remaining
     frozen_ratio = 0.6 * remaining
-
     rand_val = random.random()
+    # print(rand_val, random_ratio, greedy_ratio, self_ratio, frozen_ratio)
     return rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio
 
 def train(with_periodic_self: bool = True, with_random: bool = True):
@@ -507,7 +524,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                 state, info = env.reset()
 
                 # Determine opponent for the new episode
-                rand_val, random_ratio, progress, greedy_ratio, frozen_ratio = get_ratios(total_timesteps_collected)
+                rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio = get_ratios(total_timesteps_collected)
                 opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, frozen_ratio, greedy_ratio, self_ratio)
 
                 if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF, Opponents.GREEDY]:
@@ -521,7 +538,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
         # ---- update training
         if len(memory.states) > 0:
             entropy_coef = get_entropy_coef(total_timesteps_collected)
-
+            #print("Entropy Coefficient: ", entropy_coef)
             p_loss, v_loss, ent, combined_loss = agent.update(memory, entropy_coef)
             memory.clear_memory()
             num_updates += 1

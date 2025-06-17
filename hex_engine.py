@@ -30,6 +30,7 @@ class hexPosition (object):
         self.board = board
         self.player = 1
         self.winner = 0
+        self.move_count = 0
         #attributes storing the history
         self.history = [board]
     def reset (self):
@@ -39,6 +40,7 @@ class hexPosition (object):
         self.board = [[0 for x in range(self.size)] for y in range(self.size)]
         self.player = 1
         self.winner = 0
+        self.move_count = 0
         self.history = []
     def move (self, coordinates):
         """
@@ -53,6 +55,8 @@ class hexPosition (object):
         self.board[coordinates[0]][coordinates[1]] = self.player
         #change the active player
         self.player *= -1
+        # add move_count
+        self.move_count += 1
         #evaluate the position
         self.evaluate()
         #append to history

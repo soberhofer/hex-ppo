@@ -79,7 +79,7 @@ class PPOAgent:
                     surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = self.MseLoss(state_values.squeeze(), old_rewards)
-                    loss = policy_loss + 0.5 * value_loss #- entropy_coef * dist_entropy
+                    loss = policy_loss + 0.5 * value_loss - entropy_coef * dist_entropy # TODO: test if removing actually yields better result
 
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
@@ -100,7 +100,7 @@ class PPOAgent:
                 policy_loss = -torch.min(surr1, surr2).mean()
                 value_loss = self.MseLoss(state_values.squeeze(), old_rewards) # Assuming old_rewards are already returns
 
-                loss = policy_loss + 0.5 * value_loss #- entropy_coef * dist_entropy
+                loss = policy_loss + 0.5 * value_loss - entropy_coef * dist_entropy
 
                 self.optimizer.zero_grad()
                 loss.backward()
