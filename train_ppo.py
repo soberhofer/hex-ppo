@@ -36,6 +36,7 @@ RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of 
 NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
 
+overall_best = [0.0]
 frozen_agent_list = []
 
 class Opponents:
@@ -180,13 +181,12 @@ def update_best_agent_stats(random_win_rate: float, timesteps_collected: int, cu
         best_results_for_each_agent[agent_key]["updates"] += 1
         save_model(ppo_policy_net, timesteps_collected, random_win_rate, f"_best_against_{current_agent}")
 
-win_rate_best = 0
 def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: int, num_games=100):
     """
     Evaluate against 50 random games and 50 x agents in frozen_agents games against frozen agents
     """
     assert len(frozen_agent_list) > 0, "At least one frozen agent .pth file is required for evaluation."
-
+    assert len(overall_best) > 0, "test"
     print(f"\n--- Evaluating PPO Agent vs Random (50) + Frozen Agents ({len(frozen_agent_list)} total, 50 games) ---")
 
     stats = {
@@ -266,26 +266,30 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
 
         update_best_agent_stats(win_rate, time_steps_collected, Opponents.FROZEN_SELF+agent, agent, ppo_policy_net)
 
-    #print(current_win_rate_frozen + random_win_rate)
-    #print(len(frozen_agent_list) +1 )
-    #current_win_rate = round((current_win_rate_frozen + random_win_rate)/ (len(frozen_agent_list) + 1), 2)
+    print(current_win_rate_frozen + random_win_rate)
+    print(len(frozen_agent_list) +1 )
+    current_win_rate = round((current_win_rate_frozen + random_win_rate)/ (len(frozen_agent_list) + 1), 2)
     rate = 0
     count = 0
-    for key, items in best_results_for_each_agent.items():
-        #print(items['win_rate'])
+    """for key, items in best_results_for_each_agent.items():
+        print(items['win_rate'])
         count += 1
-        rate += items['win_rate']
+        rate += items['win_rate']"""
 
     # print("elements in best results", count)
-    rate = round(rate / count,2)
+    # rate = round((rate / count),2)
 
-    global win_rate_best
-    print("Best Win rate overall: ", win_rate_best)
-    print("Current win rate overall: ", rate)
+
+    print("Best Win rate overall: ", overall_best[0] )
+    print("Current win rate overall: ", current_win_rate)
     print("Played opponents count so far: ", opponent_counts)
-    if rate > win_rate_best:
-        win_rate_best = rate
-        save_model(ppo_policy_net, time_steps_collected, win_rate_best,"_overall")
+    if current_win_rate > overall_best[0]:
+        print(overall_best[0])
+        overall_best.pop(0)
+        overall_best.append(current_win_rate)
+        save_model(ppo_policy_net, time_steps_collected, overall_best[0],"_overall")
+
+    print("Best Win rate overall after update: ", overall_best[0])
 
     print("--- Evaluation Finished ---\n")
     ppo_policy_net.train()
