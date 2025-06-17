@@ -239,7 +239,9 @@ class ActorCritic(nn.Module):
 
         # Convolutional layers for feature extraction
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
 
         # 1x1 Convolution for the residual connection to match channel dimensions
         self.residual_projection = nn.Conv2d(1, 64, kernel_size=1, stride=1, padding=0)
@@ -262,13 +264,13 @@ class ActorCritic(nn.Module):
         obs_float = obs.float()  # Use a different variable name to keep original obs for residual
 
         # Main path
-        x = F.relu(self.conv1(obs_float))
-        x = F.relu(self.conv2(x))
+        x = F.leaky_relu(self.bn1(self.conv1(obs_float)))
+        x = F.leaky_relu(self.bn2(self.conv2(x)))
 
         # Residual connection
         residual = self.residual_projection(obs_float)
         x = x + residual
-        x = F.relu(x)  # Apply ReLU after adding residual
+        x = F.leaky_relu(x)  # Apply ReLU after adding residual
 
         # Flatten the output for the fully connected layers
         x = x.view(x.size(0), -1)  # Flatten all dimensions except batch

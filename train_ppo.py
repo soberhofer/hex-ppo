@@ -11,31 +11,32 @@ import time
 import copy
 
 # Hyperparameters
-TEMPERATURE = 1.3
+TEMPERATURE = 1.0
 FINAL_TEMPERATURE = 1.0
 HEX_BOARD_SIZE = 7
-INITIAL_LEARNING_RATE = 0.001 # this is the learning rate up until linear warm up goes
+INITIAL_LEARNING_RATE = 0.0005 # this is the learning rate up until linear warm up goes
 GAMMA = 0.99
 K_EPOCHS = 10
-EPS_CLIP = 0.2
+EPS_CLIP = 0.15
 GAE_LAMBDA = 0.95           # bias in advantage estimates
 ENTROPY_COEF_INITIAL = 0.02 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
 ENTROPY_COEF_FINAL = 0.001
+MAX_CLIPPING = 0.3
 
-MAX_TOTAL_TIMESTEPS = 3000000  # Total timesteps to train for
+MAX_TOTAL_TIMESTEPS = 1500000  # Total timesteps to train for
 TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
-UPDATES_PER_EVAL = 10        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
+UPDATES_PER_EVAL = 5        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
 UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2048 steps/update = ~500k steps)
 # LR Scheduler: step_size is now in terms of number of updates
 #LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
 #LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
-WARMUP_EPOCHS = int(0.03 * MAX_TOTAL_TIMESTEPS) # 5% of overall total steps
+WARMUP_EPOCHS = int(0.2 * MAX_TOTAL_TIMESTEPS) # 20% of overall total steps
 
-RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of episodes in the beginning
-GREEDY_OPPONENT_RATIO = 0.2
-INITIAL_RATIO = 0.05
+RANDOM_OPPONENT_RATIO = 0.3 # Play against random opponent for this fraction of episodes in the beginning
+GREEDY_OPPONENT_RATIO = 0.3
+INITIAL_RATIO = 0.1
 
-NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
+NUM_EVAL_GAMES = 200 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
 
 overall_best = [0.0]
@@ -365,17 +366,18 @@ def get_scheduler(agent):
 
     # Define both schedulers
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(agent.optimizer,
-                                                         start_factor=0.01,
+                                                         start_factor=0.1,
                                                          total_iters=WARMUP_EPOCHS
                                                          # iterations until which the initial LR is reached
                                                          )
 
     plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         agent.optimizer,
-        patience=10,  # iterations the scheduler waits until it reduces the LR
-        factor=0.9,  # factor the LR gets multiplicated with
-        min_lr=1e-6,  # min LR that will be kept as lower boundary
-        threshold=1e-4,
+        patience=20,  # iterations the scheduler waits until it reduces the LR
+        factor=0.85,  # factor the LR gets multiplicated with
+        min_lr=5e-5,  # min LR that will be kept as lower boundary
+        threshold=0.05,
+        mode='max'
     )
     return warmup_scheduler, plateau_scheduler
 
@@ -411,19 +413,25 @@ def get_ratios(total_timesteps_collected: int):
     #print(progress)
 
     if progress < 0.33:
+        frozen_ratio_multiplier = 0.25
+        self_ratio_multiplier = 0.75
         random_ratio = RANDOM_OPPONENT_RATIO
         greedy_ratio = INITIAL_RATIO
     elif progress < 0.66:
+        frozen_ratio_multiplier = 0.4
+        self_ratio_multiplier = 0.6
         random_ratio = RANDOM_OPPONENT_RATIO / 2
         greedy_ratio = GREEDY_OPPONENT_RATIO / 2
     else:
+        frozen_ratio_multiplier = 0.5
+        self_ratio_multiplier = 0.5
         random_ratio = INITIAL_RATIO
         greedy_ratio = GREEDY_OPPONENT_RATIO
 
     remaining = max(0.0, 1.0 - random_ratio - greedy_ratio)
 
-    self_ratio = 0.6 * remaining
-    frozen_ratio = 0.4 * remaining
+    self_ratio =  self_ratio_multiplier * remaining
+    frozen_ratio = frozen_ratio_multiplier * remaining
     rand_val = random.random()
     # print(rand_val, random_ratio, greedy_ratio, self_ratio, frozen_ratio)
     return rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio
@@ -433,7 +441,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
     env = HexEnv(size=HEX_BOARD_SIZE)
     obs_shape = env.observation_space.shape
     action_space_size = env.action_space.n
-    agent = PPOAgent(obs_shape, action_space_size, INITIAL_LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device,
+    agent = PPOAgent(obs_shape, action_space_size, INITIAL_LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device, MAX_CLIPPING,
                      torch.cuda.is_available())
 
     memory = RolloutMemory(device)
@@ -555,7 +563,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
             avg_rewards = np.mean(all_episode_rewards[-15:])
 
             # try to update scheduler based on increasing rewards
-            update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, combined_loss, -avg_rewards) # neg due to minimize of plateauscheduler
+            update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, combined_loss, avg_rewards) # if loss is used, set reduceonplateaulrscheduler to mode='min'
 
 
             # --- log outputs every ten updates

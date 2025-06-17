@@ -5,13 +5,14 @@ from src.ppo_model import ActorCritic
 import numpy as np
 
 class PPOAgent:
-    def __init__(self, obs_shape, action_space_size, lr=3e-4, gamma=0.99, k_epochs=4, eps_clip=0.2, gae_lambda=0.95, device=torch.device("cpu"), scaler: bool = False):
+    def __init__(self, obs_shape, action_space_size, lr=3e-4, gamma=0.99, k_epochs=4, eps_clip=0.2, gae_lambda=0.95, device=torch.device("cpu"), max_gradient_clip = 0.3, scaler: bool = False):
         self.gamma = gamma
         self.k_epochs = k_epochs
         self.eps_clip = eps_clip
         self.gae_lambda = gae_lambda
         self.device = device
         self.use_mixed_precision = scaler
+        self.max_gradient_clip = max_gradient_clip
         if self.use_mixed_precision:
             self.scaler = torch.amp.GradScaler()
 
@@ -79,11 +80,11 @@ class PPOAgent:
                     surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
                     policy_loss = -torch.min(surr1, surr2).mean()
                     value_loss = self.MseLoss(state_values.squeeze(), old_rewards)
-                    loss = policy_loss + 0.5 * value_loss - entropy_coef * dist_entropy # TODO: test if removing actually yields better result
+                    loss = policy_loss + 0.25 * value_loss - entropy_coef * dist_entropy # TODO: test if removing actually yields better result
 
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5)
+                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
 
@@ -104,7 +105,7 @@ class PPOAgent:
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5) # Gradient Clipping
+                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip) # Gradient Clipping
                 self.optimizer.step()
         
         # Copy new weights into old policy
@@ -124,13 +125,18 @@ class PPOAgent:
         
         returns = torch.tensor(returns, dtype=torch.float32, device=self.device) # Move returns to device
 
+        # normalize returns
+        returns = (returns - returns.mean()) / (returns.std() + 1e-5)
+
         # Calculate advantages using GAE
         with torch.no_grad():
             values = self.policy_old(states)[1].squeeze() # Get values from the old policy
-        
+
+            # normalize values
+            values = (values - values.mean()) / (values.std() + 1e-5)
         advantages = returns - values
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
+        # Normalize advantages - returns & values normalized each
+        # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
         
         return advantages
 
