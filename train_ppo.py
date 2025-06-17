@@ -19,7 +19,7 @@ GAMMA = 0.99
 K_EPOCHS = 10
 EPS_CLIP = 0.2
 GAE_LAMBDA = 0.95           # bias in advantage estimates
-ENTROPY_COEF_INITIAL = 0.03 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
+ENTROPY_COEF_INITIAL = 0.02 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
 ENTROPY_COEF_FINAL = 0.001
 
 MAX_TOTAL_TIMESTEPS = 3000000  # Total timesteps to train for
@@ -263,7 +263,7 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
 
         update_best_agent_stats(win_rate, time_steps_collected, Opponents.FROZEN_SELF+agent, agent, ppo_policy_net)
 
-    current_win_rate = (current_win_rate_frozen + random_win_rate)/ (len(agents) + 1)
+    current_win_rate = round((current_win_rate_frozen + random_win_rate)/ (len(agents) + 1), 2)
     rate = 0
     count = 0
     for key, items in best_results_for_each_agent.items():
@@ -272,7 +272,7 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
         rate += items['win_rate']
 
     # print("elements in best results", count)
-    rate = rate / count
+    rate = round(rate / count,2)
 
     print("Best Win rate overall: ", rate)
     print("Current win rate overall: ", current_win_rate)
@@ -545,7 +545,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                     avg_ep_reward_str = f", Avg Ep Reward (last ~{lookback_episodes}): {avg_recent_ep_reward:.2f}"
 
                 print(f"Update {num_updates}, Timesteps: {total_timesteps_collected}, LR: {current_lr:.7f}{avg_ep_reward_str}")
-                print(f"  Losses: Policy: {p_loss:.4f}, Value: {v_loss:.4f}")#, Entropy: {ent:.4f}")
+                print(f"  Losses: Policy: {p_loss:.4f}, Value: {v_loss:.4f}, Entropy: {ent:.4f}")
 
             # --- periodic evaluation
             if num_updates > 0 and num_updates % UPDATES_PER_EVAL == 0:

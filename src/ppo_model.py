@@ -230,12 +230,6 @@ class ActorCriticInterM(nn.Module):
         return action_log_probs, value, dist_entropy
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.distributions import Categorical
-
-
 class ActorCritic(nn.Module):
     def __init__(self, obs_shape, action_space_size):
         super(ActorCritic, self).__init__()
