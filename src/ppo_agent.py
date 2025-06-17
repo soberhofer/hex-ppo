@@ -19,11 +19,10 @@ class PPOAgent:
         self.optimizer = torch.optim.AdamW(
                 self.policy.parameters(),
                 lr=lr,
-                weight_decay=1e-3,  # l2 regularization, reduce overfitting
+                weight_decay=1e-4,  # l2 regularization, reduce overfitting
                 betas=(0.9, 0.999)  # control momentum (gradient average), reduce oszillation, control adaptive lrs
             )
 
-        #self.optimizer = optim.AdamW(self.policy.parameters(), lr=lr)
         self.policy_old = ActorCritic(obs_shape, action_space_size).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
 

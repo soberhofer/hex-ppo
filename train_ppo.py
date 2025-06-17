@@ -11,7 +11,7 @@ import time
 import copy
 
 # Hyperparameters
-TEMPERATURE = 1.4
+TEMPERATURE = 1.3
 FINAL_TEMPERATURE = 1.0
 HEX_BOARD_SIZE = 7
 INITIAL_LEARNING_RATE = 0.001 # this is the learning rate up until linear warm up goes
@@ -19,19 +19,19 @@ GAMMA = 0.99
 K_EPOCHS = 10
 EPS_CLIP = 0.2
 GAE_LAMBDA = 0.95           # bias in advantage estimates
-ENTROPY_COEF_INITIAL = 0.02 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
+ENTROPY_COEF_INITIAL = 0.03 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
 ENTROPY_COEF_FINAL = 0.001
 
-MAX_TOTAL_TIMESTEPS = 5000000  # Total timesteps to train for
+MAX_TOTAL_TIMESTEPS = 3000000  # Total timesteps to train for
 TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
 UPDATES_PER_EVAL = 10        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
 UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2048 steps/update = ~500k steps)
 # LR Scheduler: step_size is now in terms of number of updates
 #LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
 #LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
-WARMUP_EPOCHS = int(0.05 * MAX_TOTAL_TIMESTEPS) # 5% of overall total steps
+WARMUP_EPOCHS = int(0.03 * MAX_TOTAL_TIMESTEPS) # 5% of overall total steps
 
-RANDOM_OPPONENT_RATIO = 0.3 # Play against random opponent for this fraction of episodes in the beginning
+RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of episodes in the beginning
 
 NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
@@ -286,61 +286,6 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
     ppo_policy_net.train()
     return stats
 
-
-
-
-
-# --- Evaluation Function (integrated) ---
-def evaluate_against_random(ppo_policy_net, device,  env: HexEnv, num_games=NUM_EVAL_GAMES,):
-    print(f"\n--- Evaluating PPO Agent vs Random Agent for {num_games} games ---")
-    ppo_wins = 0
-    game_engine = hexPosition(size=HEX_BOARD_SIZE)
-    ppo_policy_net.eval() # Ensure ppo_policy_net is in eval mode
-
-    for i in range(num_games):
-        game_engine.reset()
-        if i % 2 == 0:
-            current_player1_is_ppo = True
-            ppo_plays_as_player = 1 # PPO is player 1 (White)
-        else:
-            current_player1_is_ppo = False
-            ppo_plays_as_player = -1 # PPO is player -1 (Black)
-
-        while game_engine.winner == 0:
-
-            # convert board to tensor, add batch & channel dimensions
-            current_board_for_nn = torch.FloatTensor(game_engine.board).unsqueeze(0).unsqueeze(1).to(device)
-            action_coords = None
-
-            is_ppo_turn_now = (game_engine.player == 1 and current_player1_is_ppo) or \
-                              (game_engine.player == -1 and not current_player1_is_ppo)
-
-            if is_ppo_turn_now:
-                with torch.no_grad():
-                    valid_actions_tuples = game_engine.get_action_space()
-                    action_coords = ppo_action_from_policy(current_board_for_nn, valid_actions_tuples, ppo_policy_net, device, env)
-
-            else: # Random agent's turn
-                action_coords = random.choice(game_engine.get_action_space()) # random_agent_eval simplified
-                # action_coords = random_agent_eval(game_engine.board, game_engine.get_action_space())
-            
-            if action_coords is None: # Should not happen if logic is correct
-                print("Error: action_coords is None. Defaulting to random.")
-                valid_actions = game_engine.get_action_space()
-                action_coords = random.choice(valid_actions) if valid_actions else (0, 0)
-
-            game_engine.move(action_coords)
-            game_engine.evaluate()
-
-        if game_engine.winner == ppo_plays_as_player:
-            ppo_wins += 1
-            
-    win_rate = (ppo_wins / num_games) * 100
-    print(f"PPO Agent win rate vs Random: {win_rate:.2f}% ({ppo_wins}/{num_games})")
-    print("--- Evaluation Finished ---")
-    ppo_policy_net.train() # Set policy back to train mode
-    return win_rate
-
 def freeze_agent_and_reset_policy(frozen_agent, agent, env, device, num_updates):
     """"
         Freezes the agent and resets the policy, so that ppo agent can play against older versions of itself.
@@ -348,8 +293,8 @@ def freeze_agent_and_reset_policy(frozen_agent, agent, env, device, num_updates)
     frozen_agent = copy.deepcopy(agent)
 
     # TODO: check if this can lead to memory problems
-    if len(frozen_agent_list) == 6:
-        frozen_agent_list.pop(0)    # remove first, currently want to keep three agents only
+    if len(frozen_agent_list) == 4:
+        frozen_agent_list.pop(0)    # remove first
 
     frozen_agent_list.append((num_updates, frozen_agent))
 
@@ -363,10 +308,6 @@ def ppo_turn(agent, state, valid_actions, temperature):
 def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: float, random_opponent_ratio: float, frozen_self_ratio: float,  greedy_ratio: float, self_ratio: float, force_first = False):
     if force_first:
         return Opponents.FROZEN_SELF
-    #print(f"OPPONENT RANDOM: {rand_val} / {adjusted_random_ratio}")
-    #print(f"OPPONENT FROZEN SELF: {rand_val} / {adjusted_random_ratio + frozen_self_ratio}")
-    #print(f"OPPONENT GREEDY: {rand_val} / {adjusted_random_ratio + frozen_self_ratio + greedy_ratio}")
-    #print(f"OPPONENT SELF: {rand_val} / {adjusted_random_ratio + frozen_self_ratio + greedy_ratio}")
 
     random_cutoff = random_opponent_ratio
     frozen_cutoff = random_cutoff + frozen_self_ratio
@@ -421,7 +362,7 @@ def update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, loss, avg
         warmup_scheduler.step()
     else:
         # plateau scheduler needs step
-        plateau_scheduler.step(loss)
+        plateau_scheduler.step(avg_reward)
     # lr_scheduler.step()
 
 def get_temperature(total_timesteps_collected):
@@ -619,7 +560,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
             # --- periodic replacement with frozen snapshot --> updates the opponent, so that it gets smarter too
             if with_periodic_self:
-                if num_updates % 150 == 0:
+                if num_updates % 200 == 0:
                     print("Replacing current frozen_self with updated version")
                     freeze_agent_and_reset_policy(frozen_agent, agent, env, device, num_updates)
 
@@ -639,3 +580,55 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 if __name__ == '__main__':
     train()
 
+
+# --- Evaluation Function (integrated) ---
+def evaluate_against_random(ppo_policy_net, device, env: HexEnv, num_games=NUM_EVAL_GAMES, ):
+    print(f"\n--- Evaluating PPO Agent vs Random Agent for {num_games} games ---")
+    ppo_wins = 0
+    game_engine = hexPosition(size=HEX_BOARD_SIZE)
+    ppo_policy_net.eval()  # Ensure ppo_policy_net is in eval mode
+
+    for i in range(num_games):
+        game_engine.reset()
+        if i % 2 == 0:
+            current_player1_is_ppo = True
+            ppo_plays_as_player = 1  # PPO is player 1 (White)
+        else:
+            current_player1_is_ppo = False
+            ppo_plays_as_player = -1  # PPO is player -1 (Black)
+
+        while game_engine.winner == 0:
+
+            # convert board to tensor, add batch & channel dimensions
+            current_board_for_nn = torch.FloatTensor(game_engine.board).unsqueeze(0).unsqueeze(1).to(device)
+            action_coords = None
+
+            is_ppo_turn_now = (game_engine.player == 1 and current_player1_is_ppo) or \
+                              (game_engine.player == -1 and not current_player1_is_ppo)
+
+            if is_ppo_turn_now:
+                with torch.no_grad():
+                    valid_actions_tuples = game_engine.get_action_space()
+                    action_coords = ppo_action_from_policy(current_board_for_nn, valid_actions_tuples, ppo_policy_net,
+                                                           device, env)
+
+            else:  # Random agent's turn
+                action_coords = random.choice(game_engine.get_action_space())  # random_agent_eval simplified
+                # action_coords = random_agent_eval(game_engine.board, game_engine.get_action_space())
+
+            if action_coords is None:  # Should not happen if logic is correct
+                print("Error: action_coords is None. Defaulting to random.")
+                valid_actions = game_engine.get_action_space()
+                action_coords = random.choice(valid_actions) if valid_actions else (0, 0)
+
+            game_engine.move(action_coords)
+            game_engine.evaluate()
+
+        if game_engine.winner == ppo_plays_as_player:
+            ppo_wins += 1
+
+    win_rate = (ppo_wins / num_games) * 100
+    print(f"PPO Agent win rate vs Random: {win_rate:.2f}% ({ppo_wins}/{num_games})")
+    print("--- Evaluation Finished ---")
+    ppo_policy_net.train()  # Set policy back to train mode
+    return win_rate
