@@ -32,6 +32,8 @@ UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2
 WARMUP_EPOCHS = int(0.03 * MAX_TOTAL_TIMESTEPS) # 5% of overall total steps
 
 RANDOM_OPPONENT_RATIO = 0.2 # Play against random opponent for this fraction of episodes in the beginning
+GREEDY_OPPONENT_RATIO = 0.2
+INITIAL_RATIO = 0.05
 
 NUM_EVAL_GAMES = 100 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
@@ -325,7 +327,7 @@ def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: fl
 
     #print(rand_val, random_opponent_ratio, frozen_self_ratio, greedy_ratio, self_ratio)
 
-    if with_random and rand_val < random_cutoff and random_opponent_ratio != 0.0:
+    if with_random and rand_val < random_cutoff:
         #print("CHOOSE RANDOM")
         opponent_counts[Opponents.RANDOM] += 1
         return Opponents.RANDOM
@@ -333,7 +335,7 @@ def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: fl
         #print("CHOOSE PERIODIC")
         opponent_counts[Opponents.FROZEN_SELF] += 1
         return Opponents.FROZEN_SELF
-    elif rand_val < greedy_cutoff and greedy_ratio != 0.0:
+    elif rand_val < greedy_cutoff:
         #print("CHOOSE GREEDY")
         opponent_counts[Opponents.GREEDY] += 1
         return Opponents.GREEDY
@@ -410,18 +412,18 @@ def get_ratios(total_timesteps_collected: int):
 
     if progress < 0.33:
         random_ratio = RANDOM_OPPONENT_RATIO
-        greedy_ratio = 0.0
+        greedy_ratio = INITIAL_RATIO
     elif progress < 0.66:
         random_ratio = RANDOM_OPPONENT_RATIO / 2
-        greedy_ratio = RANDOM_OPPONENT_RATIO / 2
+        greedy_ratio = GREEDY_OPPONENT_RATIO / 2
     else:
-        random_ratio = 0.0
-        greedy_ratio = RANDOM_OPPONENT_RATIO
+        random_ratio = INITIAL_RATIO
+        greedy_ratio = GREEDY_OPPONENT_RATIO
 
     remaining = max(0.0, 1.0 - random_ratio - greedy_ratio)
 
-    self_ratio = 0.4 * remaining
-    frozen_ratio = 0.6 * remaining
+    self_ratio = 0.6 * remaining
+    frozen_ratio = 0.4 * remaining
     rand_val = random.random()
     # print(rand_val, random_ratio, greedy_ratio, self_ratio, frozen_ratio)
     return rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio
