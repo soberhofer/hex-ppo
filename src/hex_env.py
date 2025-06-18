@@ -139,8 +139,10 @@ class HexEnv(gym.Env):
         return 0.08 * min(chain_length, 5) # max 0.08 * 5
 
     def get_final_reward(self, original_player):
-        base = 2.0 if self.hex_game.winner == original_player else -2.0
+        base = 1.0 if self.hex_game.winner == original_player else -1.0
+        #print("BASE REWARD: ", base)
         move_penalty = -0.002 * self.hex_game.move_count # idea: faster games get better final rewards
+        #print("MOVE PENALTY: ", move_penalty)
         return base  + move_penalty
 
     def _calculate_strategic_rewards(self, coordinates, player):
@@ -211,8 +213,9 @@ class HexEnv(gym.Env):
         total_blocking_reward = blocking_large_chains + blocking_potential
         return min(total_blocking_reward, 1.0) # cap at 1.0
 
-    def step(self, action):
+    def step(self, action, current_payer_in_game):
         coordinates = self.hex_game.scalar_to_coordinates(action)
+        original_player = current_payer_in_game
 
         # Check if the move is valid
         if coordinates not in self.hex_game.get_action_space():
@@ -224,8 +227,6 @@ class HexEnv(gym.Env):
             info = self._get_info()
             return observation, reward, terminated, truncated, info
 
-        original_player = self.hex_game.player
-        
         # Make the move
         self.hex_game.move(coordinates) # board is updated here, self.hex_game.player is flipped
 
@@ -235,7 +236,7 @@ class HexEnv(gym.Env):
         terminated = False
         truncated = False  # Not used in this env
         #print("------------------------------------------------------------------------------------")
-        strategic_reward = self._calculate_strategic_rewards(coordinates, original_player)
+        #strategic_reward = self._calculate_strategic_rewards(coordinates, original_player)
         # print("Strategic Reward: ", strategic_reward)
 
 
@@ -246,6 +247,11 @@ class HexEnv(gym.Env):
             #print("Winner is - check before opponent: ", self.hex_game.winner)
             #print("Original player is ", original_player)
             final_reward = self.get_final_reward(original_player)
+            #print("FINAL REWARD IS: ", final_reward)
+            observation = self._get_obs()
+            info = self._get_info()
+            return observation, final_reward, terminated, truncated, info
+
 
         # if there is an opponent policy defined
         elif not terminated and self.opponent_policy is not None and self.hex_game.player == -original_player:
@@ -263,14 +269,18 @@ class HexEnv(gym.Env):
                 #print("Winner is: ", self.hex_game.winner)
                 #print("Original player is ", original_player)
                 final_reward = self.get_final_reward(original_player)
+                #print("FINAL REWARD IS: ", final_reward)
+                observation = self._get_obs()
+                info = self._get_info()
+                return observation, final_reward, terminated, truncated, info
 
         # strategic rewards should be less important at the end of the game test
-        progress = self.hex_game.move_count / (self.size**2)
-        strategic_weight = 0.6 * (1 - progress)
-        little_random_noise_for_exploration = 0.1*random.uniform(-0.1, 0.1)
-        reward = (final_reward + # * 0.2
+        #progress = self.hex_game.move_count / (self.size**2)
+        #strategic_weight = 0.6 * (1 - progress)
+        #little_random_noise_for_exploration = 0.1*random.uniform(-0.1, 0.1)
+        reward = (final_reward # + # * 0.2
                   #strategic_weight *
-                  strategic_reward#+ # * 0.5
+                  # strategic_reward#+ # * 0.5
                   #little_random_noise_for_exploration
                   )
 
