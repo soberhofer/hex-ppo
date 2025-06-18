@@ -35,17 +35,18 @@ UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2
 WARMUP_EPOCHS = int(0.15 * MAX_TOTAL_TIMESTEPS) # 15% of overall total steps
 
 RANDOM_OPPONENT_RATIO_EASY = 0.3 # Play against random opponent for this fraction of episodes in the beginning
-RANDOM_OPPONENT_RATIO_MEDIUM = 0.1
+RANDOM_OPPONENT_RATIO_MEDIUM = 0.15
 RANDOM_OPPONENT_RATIO_HARD = 0.05
 GREEDY_OPPONENT_RATIO_EASY = 0.1
-GREEDY_OPPONENT_RATIO_MEDIUM = 0.2
-GREEDY_OPPONENT_RATIO_HARD = 0.35
+GREEDY_OPPONENT_RATIO_MEDIUM = 0.15
+GREEDY_OPPONENT_RATIO_HARD = 0.3
+
 
 AVG_REWARD_WINDOW = 50
 NUM_EVAL_GAMES = 200 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
 BEST_MODEL_PATH = f"{MODEL_DIR}/ppo_hex_agent_update_best_so_far.pth"
-PERIODIC_REPLACE_COUNTER = 100
+PERIODIC_REPLACE_COUNTER = 75
 
 overall_best = [0.0]
 frozen_agent_list = []
@@ -197,7 +198,7 @@ def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_ga
     """
     # assert len(frozen_agent_list) > 0, "At least one frozen agent .pth file is required for evaluation."
     assert len(overall_best) > 0, "test"
-    print(f"\n--- Evaluating PPO Agent vs Random (50) + Frozen Agents ({len(frozen_agent_list)} total, 50 games) ---")
+    print(f"\n--- Evaluating PPO Agent vs Random ({num_games}) + Frozen Agents ({len(frozen_agent_list)} total, {num_games} games) ---")
 
     stats = {
         Opponents.RANDOM: {"wins": 0, "games": 0, 'wins_as_white': 0, 'wins_as_black': 0, 'win_rate': 0.0},
@@ -307,13 +308,13 @@ def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_ga
         # print("PREV ", previous_rate)
         # print("NEW " , win_rate)
         stats[opponent]['win_rate'] = round(win_rate, 2)
-        if opponent == Opponents.SELF and win_rate > previous_rate:
+        if opponent == Opponents.SELF and win_rate > previous_rate and num_games % PERIODIC_REPLACE_COUNTER == 0:
             # print(f"Replacing current frozen_self with better version at {time_steps_collected}")
             freeze_agent_and_reset_policy(agent, env, device, time_steps_collected)
             #print(len(frozen_agent_list))
 
     current_win_rate_frozen = 0
-
+    count = 0
     for i, frozen_stat in enumerate(stats[Opponents.FROZEN_SELF]):
         wins, games = frozen_stat["wins"], frozen_stat["games"]
         win_rate = wins / max(1, games)
@@ -325,6 +326,7 @@ def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_ga
         current_win_rate_frozen += win_rate
         update_best_agent_stats(win_rate, time_steps_collected, f"{Opponents.FROZEN_SELF}{update_step}", update_step,
                                 agent)
+        count +=1
 
     # weight the win rates according to how much agent was trained with it
     all_opponents = sum(opponent_counts.values())
@@ -333,16 +335,16 @@ def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_ga
     frozen_ratio = round(opponent_counts[Opponents.FROZEN_SELF] / all_opponents, 2)
     self_ratio = round(opponent_counts[Opponents.SELF] / all_opponents, 2)
 
-    current_win_rate = round((current_win_rate_frozen/len(frozen_agent_list))*frozen_ratio +
+    current_win_rate = round((current_win_rate_frozen/count)*frozen_ratio +
                              stats[Opponents.SELF]['win_rate']*self_ratio +
                              stats[Opponents.GREEDY]['win_rate']*greedy_ratio +
                              stats[Opponents.RANDOM]['win_rate']*random_ratio,
                              2)
 
     print(f"Current weighted win rate overall: { current_win_rate} \n")
-    print(f"Ratios are: random {random_ratio}, greedy {greedy_ratio},"
-          f" frozen {frozen_ratio}"
-          f", self {self_ratio}")
+    print(f"Ratios are: random {stats[Opponents.RANDOM] } * {random_ratio}, greedy {stats[Opponents.GREEDY]} * {greedy_ratio},"
+          f" frozen {current_win_rate_frozen/count} * {frozen_ratio}"
+          f", self {stats[Opponents.SELF]} * {self_ratio}")
     print("Best weighted win rate overall: ", overall_best[0])
     print("Played opponents count so far: ", opponent_counts)
 
