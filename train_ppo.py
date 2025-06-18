@@ -14,14 +14,16 @@ import copy
 TEMPERATURE = 1.0
 FINAL_TEMPERATURE = 1.0
 HEX_BOARD_SIZE = 7
-INITIAL_LEARNING_RATE = 0.0005 # this is the learning rate up until linear warm up goes
+INITIAL_LEARNING_RATE = 0.0003 # this is the learning rate up until linear warm up goes
 GAMMA = 0.99
-K_EPOCHS = 10
+K_EPOCHS = 8
 EPS_CLIP = 0.15
-GAE_LAMBDA = 0.95           # bias in advantage estimates
-ENTROPY_COEF_INITIAL = 0.02 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
-ENTROPY_COEF_FINAL = 0.001
-MAX_CLIPPING = 0.3
+GAE_LAMBDA = 0.92           # bias in advantage estimates
+ENTROPY_COEF_INITIAL = 0.03 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
+ENTROPY_COEF_FINAL = 0.002
+MAX_CLIPPING = 0.25
+VALUE_COEF = 0.3
+MAX_PATIENCE = 10
 
 MAX_TOTAL_TIMESTEPS = 1500000  # Total timesteps to train for
 TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
@@ -30,16 +32,15 @@ UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2
 # LR Scheduler: step_size is now in terms of number of updates
 #LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
 #LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
-WARMUP_EPOCHS = int(0.2 * MAX_TOTAL_TIMESTEPS) # 20% of overall total steps
+WARMUP_EPOCHS = int(0.15 * MAX_TOTAL_TIMESTEPS) # 15% of overall total steps
 
-RANDOM_OPPONENT_RATIO_EASY = 0.4 # Play against random opponent for this fraction of episodes in the beginning
-RANDOM_OPPONENT_RATIO_MEDIUM = 0.2
+RANDOM_OPPONENT_RATIO_EASY = 0.3 # Play against random opponent for this fraction of episodes in the beginning
+RANDOM_OPPONENT_RATIO_MEDIUM = 0.15
 RANDOM_OPPONENT_RATIO_HARD = 0.05
-GREEDY_OPPONENT_RATIO_EASY = 0.1
+GREEDY_OPPONENT_RATIO_EASY = 0.05
 GREEDY_OPPONENT_RATIO_MEDIUM = 0.15
-GREEDY_OPPONENT_RATIO_HARD = 0.25
+GREEDY_OPPONENT_RATIO_HARD = 0.3
 
-MAX_PATIENCE = 10
 AVG_REWARD_WINDOW = 50
 NUM_EVAL_GAMES = 200 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
@@ -194,13 +195,13 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
     """
     Evaluate against 50 random games and 50 x agents in frozen_agents games against frozen agents
     """
-    assert len(frozen_agent_list) > 0, "At least one frozen agent .pth file is required for evaluation."
+    # assert len(frozen_agent_list) > 0, "At least one frozen agent .pth file is required for evaluation."
     assert len(overall_best) > 0, "test"
     print(f"\n--- Evaluating PPO Agent vs Random (50) + Frozen Agents ({len(frozen_agent_list)} total, 50 games) ---")
 
     stats = {
         Opponents.RANDOM: {"wins": 0, "games": 0, 'wins_as_white': 0, 'wins_as_black': 0, 'win_rate': 0.0},
-        Opponents.FROZEN_SELF: [{"wins": 0, "games": 0, 'wins_as_white': 0, 'wins_as_black': 0, 'win_rate': 0.0} for _ in frozen_agent_list],
+        # Opponents.FROZEN_SELF: [{"wins": 0, "games": 0, 'wins_as_white': 0, 'wins_as_black': 0, 'win_rate': 0.0} for _ in frozen_agent_list],
         Opponents.GREEDY: {"wins": 0, "games": 0, 'wins_as_white': 0, 'wins_as_black': 0, 'win_rate': 0.0},
         Opponents.SELF: {"wins": 0, "games": 0, 'wins_as_white': 0, 'wins_as_black': 0, 'win_rate': 0.0},
         'overall': {'wins': 0, 'games': num_games * (len(frozen_agent_list) + num_games)},
@@ -254,6 +255,7 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
               stats[Opponents.SELF])
 
     # --- Evaluate against frozen agents ---
+    """
     for idx, (update_step, frozen_agent) in enumerate(frozen_agent_list):
         #print(f"Evaluating against FROZEN agent @ step {update_step}...")
         for i in range(num_games):
@@ -282,8 +284,8 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
                     stats[Opponents.FROZEN_SELF][idx]['wins_as_white'] += 1
                 else:
                     stats[Opponents.FROZEN_SELF][idx]['wins_as_black'] += 1
-
-    header = f"{'Opponent':<20} {'WINS':<10} {'BLACK/WHITE Wins':<35} {'WIN RATE':<8}"
+    """
+    header = f"{'Opponent':<20} {'WINS':<10} {'BLACK/WHITE Wins':<25} {'WIN RATE':<8}"
     print(header)
     print("-" * len(header))
     for opponent in [Opponents.RANDOM, Opponents.GREEDY, Opponents.SELF]:
@@ -299,6 +301,7 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
         update_best_agent_stats(win_rate, time_steps_collected, opponent, opponent, ppo_policy_net)
 
     current_win_rate_frozen = 0
+    """
     for i, frozen_stat in enumerate(stats[Opponents.FROZEN_SELF]):
         wins, games = frozen_stat["wins"], frozen_stat["games"]
         win_rate = wins / max(1, games)
@@ -309,22 +312,24 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
               f"{win_rate:.2f}".rjust(10))
         current_win_rate_frozen += win_rate
         update_best_agent_stats(win_rate, time_steps_collected, f"{Opponents.FROZEN_SELF}{update_step}", update_step, ppo_policy_net)
-
+    """
     # weight the win rates according to how much agent was trained with it
     all_opponents = sum(opponent_counts.values())
     random_ratio = round(opponent_counts[Opponents.RANDOM] / all_opponents, 2)
     greedy_ratio = round(opponent_counts[Opponents.GREEDY] / all_opponents, 2)
-    frozen_ratio = round(opponent_counts[Opponents.FROZEN_SELF] / all_opponents, 2)
+    # frozen_ratio = round(opponent_counts[Opponents.FROZEN_SELF] / all_opponents, 2)
     self_ratio = round(opponent_counts[Opponents.SELF] / all_opponents, 2)
 
-    current_win_rate = round(current_win_rate_frozen*frozen_ratio +
+    current_win_rate = round(#current_win_rate_frozen*frozen_ratio +
                              stats[Opponents.SELF]['win_rate']*self_ratio +
                              stats[Opponents.GREEDY]['win_rate']*greedy_ratio +
                              stats[Opponents.RANDOM]['win_rate']*random_ratio,
                              2)
 
     print(f"Current weighted win rate overall: { current_win_rate} \n")
-    print(f"Ratios are: random {random_ratio}, greedy {greedy_ratio}, frozen {frozen_ratio}, self {self_ratio}")
+    print(f"Ratios are: random {random_ratio}, greedy {greedy_ratio},"
+          #f" frozen {frozen_ratio}"
+          f", self {self_ratio}")
     print("Best weighted win rate overall: ", overall_best[0])
     print("Played opponents count so far: ", opponent_counts)
 
@@ -351,7 +356,7 @@ def freeze_agent_and_reset_policy(frozen_agent, agent, env, device, num_updates)
     frozen_agent = copy.deepcopy(agent)
 
     # TODO: check if this can lead to memory problems
-    if len(frozen_agent_list) == 3:
+    if len(frozen_agent_list) == 1: # only check against the one trained with
         frozen_agent_list.pop(0)    # remove first
 
     frozen_agent_list.append((num_updates, frozen_agent))
@@ -419,10 +424,10 @@ def get_scheduler(agent):
 
     plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         agent.optimizer,
-        patience=20,  # iterations the scheduler waits until it reduces the LR
+        patience=15,  # iterations the scheduler waits until it reduces the LR
         factor=0.85,  # factor the LR gets multiplicated with
         min_lr=5e-5,  # min LR that will be kept as lower boundary
-        threshold=0.05,
+        threshold=0.02,
         mode='max'
     )
     return warmup_scheduler, plateau_scheduler
@@ -477,7 +482,8 @@ def get_ratios(total_timesteps_collected: int, current_win_rate: float):
 
     remaining = max(0.0, 1.0 - random_ratio - greedy_ratio)
     self_ratio = self_ratio_multiplier * remaining
-    frozen_ratio = frozen_ratio_multiplier * remaining
+    #frozen_ratio = frozen_ratio_multiplier * remaining
+    frozen_ratio = 0.0
 
     rand_val = random.random()
     return rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio
@@ -513,6 +519,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
     obs_shape = env.observation_space.shape
     action_space_size = env.action_space.n
     agent = PPOAgent(obs_shape, action_space_size, INITIAL_LEARNING_RATE, GAMMA, K_EPOCHS, EPS_CLIP, GAE_LAMBDA, device, MAX_CLIPPING,
+                     VALUE_COEF,
                      torch.cuda.is_available())
 
     memory = RolloutMemory(device)
@@ -592,9 +599,9 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
 
             # ----- environment gets updated and step saved, if move was agents move
+            # print("CURRENT OPPONENT TYPE: ", opponent_type)
             next_state, step_reward, done, truncated, next_info = env.step(action_scalar_to_env)
-            #print(
-            #    f"[STEP] Action taken: {action_scalar_to_env}, reward: {step_reward}, done: {done}, next_player: {env.hex_game.player}")
+            #print(f"[STEP] Action taken: {action_scalar_to_env}, reward: {step_reward}, done: {done}, next_player: {env.hex_game.player}")
 
             if is_ppo_turn_for_memory: # Only add to memory if PPO made the move
                 memory.add(state, action_scalar_to_env, log_prob_ppo, step_reward, done or truncated)
@@ -640,7 +647,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
             update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, combined_loss,
                              avg_rewards)  # if loss is used, set reduceonplateaulrscheduler to mode='min'
 
-            if len(all_episode_rewards) > AVG_REWARD_WINDOW:
+            """if len(all_episode_rewards) > AVG_REWARD_WINDOW:
                 policy_grad_norm = torch.nn.utils.clip_grad_norm_(agent.policy.parameters(), MAX_CLIPPING)
 
                 if policy_grad_norm > 0.25:
@@ -648,10 +655,10 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                     # reduce learning rate
                     for g in agent.optimizer.param_groups:
                         g['lr'] *= 0.9
-
+            """
 
             # --- log outputs every ten updates
-            if num_updates % 10 == 0:
+            if num_updates % 1 == 0:
                 current_lr = agent.optimizer.param_groups[0]['lr']
                 avg_ep_reward_str = ""
                 if len(all_episode_rewards) > 0:

@@ -5,7 +5,7 @@ from src.ppo_model import ActorCritic
 import numpy as np
 
 class PPOAgent:
-    def __init__(self, obs_shape, action_space_size, lr=3e-4, gamma=0.99, k_epochs=4, eps_clip=0.2, gae_lambda=0.95, device=torch.device("cpu"), max_gradient_clip = 0.3, scaler: bool = False):
+    def __init__(self, obs_shape, action_space_size, lr=3e-4, gamma=0.99, k_epochs=4, eps_clip=0.2, gae_lambda=0.95, device=torch.device("cpu"), max_gradient_clip = 0.3, value_coef = 0.25, scaler: bool = False):
         self.gamma = gamma
         self.k_epochs = k_epochs
         self.eps_clip = eps_clip
@@ -13,6 +13,7 @@ class PPOAgent:
         self.device = device
         self.use_mixed_precision = scaler
         self.max_gradient_clip = max_gradient_clip
+        self.value_coef = value_coef
         if self.use_mixed_precision:
             self.scaler = torch.amp.GradScaler()
 
@@ -58,6 +59,24 @@ class PPOAgent:
         
         return action.item(), action_log_prob.item(), value.item()
 
+
+    def _evaluate_and_get_loss(self, old_states, old_actions, old_logprobs, advantages, returns, entropy_coef):
+        # Evaluate old actions and values
+        logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
+
+        # PPO clip objective
+        ratios = torch.exp(logprobs - old_logprobs.detach())
+
+        surr1 = ratios * advantages
+        surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
+
+        policy_loss = -torch.min(surr1, surr2).mean()
+        value_loss = self.MseLoss(state_values.squeeze(), returns.detach())
+
+        loss = policy_loss + self.value_coef * value_loss - entropy_coef * dist_entropy
+        return policy_loss, value_loss, dist_entropy, loss
+
+
     def update(self, memory, entropy_coef, batch_size):
         # Convert lists to tensors, add channel dimension, and move to device
         old_states = torch.stack(memory.states).float().unsqueeze(1).to(self.device)
@@ -67,72 +86,40 @@ class PPOAgent:
         old_is_terminals = torch.stack(memory.is_terminals).float().to(self.device)
         
         # Calculate advantages
-        advantages = self._calculate_advantages(old_rewards, old_is_terminals, old_states)
+        advantages, returns = self._calculate_advantages(old_rewards, old_is_terminals, old_states)
 
         indices = torch.randperm(len(old_states))
         # Optimize policy for K epochs
         for epoch in range(self.k_epochs):
-            for start in range(0, len(old_states), batch_size):
+            #for start in range(0, len(old_states), batch_size):
 
-                batch_idx = indices[start:start + batch_size]
+                #batch_idx = indices[start:start + batch_size]
 
-                batch_states = old_states[batch_idx]
-                batch_actions = old_actions[batch_idx]
-                batch_logprobs = old_logprobs[batch_idx]
-                batch_advantages = advantages[batch_idx]
-                batch_returns = old_rewards[batch_idx]
+                #batch_states = old_states[batch_idx]
+                #batch_actions = old_actions[batch_idx]
+                #batch_logprobs = old_logprobs[batch_idx]
+                #batch_advantages = advantages[batch_idx]
+                #batch_returns = returns[batch_idx]
 
                 if self.use_mixed_precision:
                     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                        logprobs, state_values, dist_entropy = self.policy.evaluate(batch_states, batch_actions)
-                        ratios = torch.exp(logprobs - batch_logprobs.detach())
-                        surr1 = ratios * batch_advantages
-                        surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * batch_advantages
-                        policy_loss = -torch.min(surr1, surr2).mean()
-                        value_loss = self.MseLoss(state_values.squeeze(), batch_returns)
-                        loss = policy_loss + 0.25 * value_loss - entropy_coef * dist_entropy # TODO: test if removing actually yields better result
+                        policy_loss, value_loss, dist_entropy, loss = self._evaluate_and_get_loss(old_states, old_actions, old_logprobs, advantages, returns, entropy_coef)
 
-                    params_to_update = []
-                    for name, param in self.policy.named_parameters():
-                        if 'value' in name and epoch > self.k_epochs // 2:  # update value-net later
-                            continue
-                        params_to_update.append(param)
-
-                    self.scaler.scale(loss).backward(retain_graph=True)
+                    self.scaler.scale(loss).backward()
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
 
                 else:
-                    # Evaluate old actions and values
-                    logprobs, state_values, dist_entropy = self.policy.evaluate(batch_states, batch_actions)
+                    policy_loss, value_loss, dist_entropy, loss = self._evaluate_and_get_loss(old_states, old_actions,
+                                                                                              old_logprobs, advantages,
+                                                                                              returns, entropy_coef)
 
-                    # PPO clip objective
-                    ratios = torch.exp(logprobs - batch_logprobs.detach())
-
-                    surr1 = ratios * batch_advantages
-                    surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * batch_advantages
-
-                    policy_loss = -torch.min(surr1, surr2).mean()
-                    value_loss = self.MseLoss(state_values.squeeze(), batch_returns) # Assuming old_rewards are already returns
-
-                    loss = policy_loss + 0.5 * value_loss - entropy_coef * dist_entropy
-
-                    params_to_update = []
-                    for name, param in self.policy.named_parameters():
-                        if 'value' in name and epoch > self.k_epochs // 2:  # update value-net later
-                            continue
-                        params_to_update.append(param)
-
-                    self.optimizer.zero_grad(set_to_none=True)
-                    loss.backward(retain_graph=True)
-                    torch.nn.utils.clip_grad_norm_(params_to_update, self.max_gradient_clip)
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip) # Gradient Clipping
                     self.optimizer.step()
-                    #self.optimizer.zero_grad()
-                    #loss.backward()
-                    #torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip) # Gradient Clipping
-                    #self.optimizer.step()
         
         # Copy new weights into old policy
         self.policy_old.load_state_dict(self.policy.state_dict())
@@ -140,7 +127,7 @@ class PPOAgent:
         return policy_loss.item(), value_loss.item(), dist_entropy.item(), loss
 
     def _calculate_advantages(self, rewards, is_terminals, states):
-        # Calculate discounted rewards (returns)
+        # Calculate discounted returns (for value targets)
         returns = []
         discounted_reward = 0
         for reward, is_terminal in zip(reversed(rewards), reversed(is_terminals)):
@@ -148,23 +135,29 @@ class PPOAgent:
                 discounted_reward = 0
             discounted_reward = reward + (self.gamma * discounted_reward)
             returns.insert(0, discounted_reward)
-        
-        returns = torch.tensor(returns, dtype=torch.float32, device=self.device) # Move returns to device
+        returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
 
-        # normalize returns
-        returns = (returns - returns.mean()) / (returns.std() + 1e-5)
-
-        # Calculate advantages using GAE
+        # Get values from old policy (value estimates)
         with torch.no_grad():
-            values = self.policy_old(states)[1].squeeze() # Get values from the old policy
+            values = self.policy_old(states)[1].squeeze()
 
-            # normalize values
-            values = (values - values.mean()) / (values.std() + 1e-5)
-        advantages = returns - values
-        # Normalize advantages - returns & values normalized each
-        # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
-        
-        return advantages
+        # Append an extra value for the last state (bootstrap value)
+        values = torch.cat([values, torch.tensor([0.0], device=self.device)])
+
+        advantages = []
+        gae = 0
+        for step in reversed(range(len(rewards))):
+            mask = 1.0 - is_terminals[step].item()
+            delta = rewards[step] + self.gamma * values[step + 1] * mask - values[step]
+            gae = delta + self.gamma * self.gae_lambda * mask * gae
+            advantages.insert(0, gae)
+
+        advantages = torch.tensor(advantages, dtype=torch.float32, device=self.device)
+        # Normalize advantages
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        return advantages, returns
+
 
 class RolloutMemory:
     def __init__(self, device):

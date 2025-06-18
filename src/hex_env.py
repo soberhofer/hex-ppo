@@ -1,4 +1,5 @@
 import random
+import math
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -62,17 +63,10 @@ class HexEnv(gym.Env):
         return reward
 
     def _calculate_bridge_reward(self, coordinates, player):
-        """Calculates bridge reward with strategic considerations:
-        - Higher reward for bridges in central/important areas
-        - Diminishing returns for multiple bridges
-        - Penalty for bridges in already secure areas
-        """
         reward = 0
         player_stones = self._get_player_stones(player)
         bridge_count = 0
-        max_bridges_per_stone = 2  # Avoid over-rewarding many bridges
 
-        # Strategic value based on position (center is more valuable)
         center = self.hex_game.size // 2
         distance_from_center = max(abs(coordinates[0] - center),
                                    abs(coordinates[1] - center))
@@ -90,15 +84,12 @@ class HexEnv(gym.Env):
             ]
 
             if len(common_empty) == 2:
-                # Base bridge value with positional importance
-                bridge_value = self.bridge_reward_value * position_weight
-
-                # Diminishing returns for multiple bridges
                 bridge_count += 1
-                if bridge_count > max_bridges_per_stone:
-                    bridge_value *= 0.7  # Reduce value after 2 bridges
 
-                # Additional bonus if bridge connects to a stone near opponent's side
+                scaling = math.log(bridge_count + 1.5)
+
+                bridge_value = self.bridge_reward_value * position_weight * scaling
+
                 if self._is_near_opponent_side(stone):
                     bridge_value *= 1.3
 
@@ -122,7 +113,7 @@ class HexEnv(gym.Env):
 
         # Normalized reward based on distance from center
         #print("Center control ", max(0, 0.2 * (1 - distance / center)))
-        return max(0, 0.2 * (1 - distance / center)) # max 0.2
+        return max(0, 0.3 * (1 - distance / center)) # max 0.3
 
     def _calculate_chain_reward(self, new_stone, player):
         """Rewards creating longer connected stone groups"""
@@ -145,43 +136,80 @@ class HexEnv(gym.Env):
 
         # Scaling reward (capped at 5 stones) - max 0.5
         # print("Chain length: {}".format(chain_length))
-        return 0.06 * min(chain_length, 5) # max 0.06 * 5
+        return 0.08 * min(chain_length, 5) # max 0.08 * 5
 
     def get_final_reward(self, original_player):
-        base = 5.0 if self.hex_game.winner == original_player else -5.0
-        move_penalty = -0.02 * self.hex_game.move_count # idea: faster games get better final rewards
-        return base + move_penalty
+        base = 2.0 if self.hex_game.winner == original_player else -2.0
+        move_penalty = -0.002 * self.hex_game.move_count # idea: faster games get better final rewards
+        return base  + move_penalty
 
     def _calculate_strategic_rewards(self, coordinates, player):
         """Weighted rewards"""
         rewards = {
-            'bridge': self._calculate_bridge_reward(coordinates, player) * 1.5,
-            'center': self._calculate_center_control(coordinates) * 0.7,
-            'chain': self._calculate_chain_reward(coordinates, player) * 0.3,
-            'connectivity': self._reward_connectivity(coordinates, player) * 0.4,
-            'blocking': self._reward_opponent_blocking(coordinates, player) * 0.6
+            'bridge': self._calculate_bridge_reward(coordinates, player) * 0.5, # 1.0,
+            'center': self._calculate_center_control(coordinates) * 0.5, #1.0,
+            'chain': self._calculate_chain_reward(coordinates, player) * 0.3, #0.5,
+            'connectivity': self._reward_connectivity(coordinates, player) * 0.3, # 0.5,
+            'blocking': self._reward_opponent_blocking(coordinates, player) *0.6, #  1.0
         }
         return sum(rewards.values())
 
-    # Neue Reward-Komponenten
     def _reward_connectivity(self, coords, player):
         """Reward if near victory"""
         if player == 1:  # Player 1 needs vertical connection
-            progress = coords[0] / (self.size - 1)  # normalized to [0,1]
+            progress = coords[0] / (self.size - 1)  # 0 = top, 1 = bottom
         else:  # player two needs horizontal connection
-            progress = coords[1] / (self.size - 1)
-        return 0.3 * (1 - abs(progress - 0.5))  # maximum in the middle
+            progress = coords[1] / (self.size - 1) # 0 = left, 1 = right
+        return 0.5 * progress
+
+    def _calculate_opponent_chain_length(self, start_coord, opponent):
+        visited = set()
+        queue = [start_coord]
+        chain_length = 0
+
+        while queue:
+            current = queue.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            chain_length += 1
+
+            for neighbor in self.hex_game._get_adjacent(current):
+                if self.hex_game.board[neighbor[0]][neighbor[1]] == opponent and neighbor not in visited:
+                    queue.append(neighbor)
+
+        return chain_length
+
+    def _reward_blocking_potential_connection(self, coords, player):
+        opponent = -player
+        reward = 0
+
+        for empty_coord in self.hex_game._get_adjacent(coords):
+            if self.hex_game.board[empty_coord[0]][empty_coord[1]] != 0:
+                continue
+
+            opponent_neighbors = [
+                n for n in self.hex_game._get_adjacent(empty_coord)
+                if self.hex_game.board[n[0]][n[1]] == opponent
+            ]
+            if len(opponent_neighbors) >= 2:
+                reward += 0.3  # Blocking of potentially connecting fields for opponent
+
+        return min(reward, 0.6)
 
     def _reward_opponent_blocking(self, coords, player):
-        """Reward blocking of opponent possibilities"""
         opponent = -player
-        blocking_score = 0
+        blocking_large_chains = 0
 
         for neighbor in self.hex_game._get_adjacent(coords):
             if self.hex_game.board[neighbor[0]][neighbor[1]] == opponent:
-                # reward neighbourhood to enemy stones
-                blocking_score += 0.2
-        return min(blocking_score, 0.6)  # Cap bei 0.6
+                chain_length = self._calculate_opponent_chain_length(neighbor, opponent)
+                blocking_large_chains += min(0.1 * chain_length, 0.6)
+
+        blocking_potential = self._reward_blocking_potential_connection(coords, player)
+
+        total_blocking_reward = blocking_large_chains + blocking_potential
+        return min(total_blocking_reward, 1.0) # cap at 1.0
 
     def step(self, action):
         coordinates = self.hex_game.scalar_to_coordinates(action)
@@ -189,7 +217,7 @@ class HexEnv(gym.Env):
         # Check if the move is valid
         if coordinates not in self.hex_game.get_action_space():
             # Invalid move, penalize and end episode
-            reward = -2 # Large penalty for invalid moves
+            reward = -1 # Large penalty for invalid moves
             terminated = True
             truncated = False # Not used in this env
             observation = self._get_obs()
@@ -240,15 +268,24 @@ class HexEnv(gym.Env):
         progress = self.hex_game.move_count / (self.size**2)
         strategic_weight = 0.6 * (1 - progress)
         little_random_noise_for_exploration = 0.1*random.uniform(-0.1, 0.1)
-        reward = (final_reward +
-                  strategic_weight * strategic_reward+
-                  little_random_noise_for_exploration
+        reward = (final_reward + # * 0.2
+                  #strategic_weight *
+                  strategic_reward#+ # * 0.5
+                  #little_random_noise_for_exploration
                   )
 
         #reward = final_reward + strategic_reward
         #print("Reward final + strategic ", reward)
         observation = self._get_obs()
         info = self._get_info()
+
+        """print(    f"[STEP] strategic reward: {strategic_reward} , final_reward: {final_reward}")#, * {strategic_weight} noise: {little_random_noise_for_exploration}")
+        print(f"CUMULATIVE REWARD: {reward}")
+        if self.hex_game.winner == original_player:
+            print(f"WON GAME WITH REWARD {reward}")
+        elif self.hex_game.winner != 0 and self.hex_game.winner != original_player:
+            print(f"LOST GAME WITH REWARD {reward}")
+        """
 
         return observation, reward, terminated, truncated, info
 
