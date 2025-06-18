@@ -36,7 +36,7 @@ class PPOAgent:
             #action_logits, value = self.policy_old(obs_tensor)
 
             if self.use_mixed_precision:
-                with torch.amp.autocast('cuda'):
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     action_logits, value = self.policy_old(obs_tensor)
             else:
                 action_logits, value = self.policy_old(obs_tensor)
@@ -58,7 +58,7 @@ class PPOAgent:
         
         return action.item(), action_log_prob.item(), value.item()
 
-    def update(self, memory, entropy_coef):
+    def update(self, memory, entropy_coef, batch_size):
         # Convert lists to tensors, add channel dimension, and move to device
         old_states = torch.stack(memory.states).float().unsqueeze(1).to(self.device)
         old_actions = torch.stack(memory.actions).long().to(self.device)
@@ -69,44 +69,70 @@ class PPOAgent:
         # Calculate advantages
         advantages = self._calculate_advantages(old_rewards, old_is_terminals, old_states)
 
+        indices = torch.randperm(len(old_states))
         # Optimize policy for K epochs
-        for _ in range(self.k_epochs):
+        for epoch in range(self.k_epochs):
+            for start in range(0, len(old_states), batch_size):
 
-            if self.use_mixed_precision:
-                with torch.amp.autocast('cuda'):
-                    logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
-                    ratios = torch.exp(logprobs - old_logprobs.detach())
-                    surr1 = ratios * advantages
-                    surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
+                batch_idx = indices[start:start + batch_size]
+
+                batch_states = old_states[batch_idx]
+                batch_actions = old_actions[batch_idx]
+                batch_logprobs = old_logprobs[batch_idx]
+                batch_advantages = advantages[batch_idx]
+                batch_returns = old_rewards[batch_idx]
+
+                if self.use_mixed_precision:
+                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                        logprobs, state_values, dist_entropy = self.policy.evaluate(batch_states, batch_actions)
+                        ratios = torch.exp(logprobs - batch_logprobs.detach())
+                        surr1 = ratios * batch_advantages
+                        surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * batch_advantages
+                        policy_loss = -torch.min(surr1, surr2).mean()
+                        value_loss = self.MseLoss(state_values.squeeze(), batch_returns)
+                        loss = policy_loss + 0.25 * value_loss - entropy_coef * dist_entropy # TODO: test if removing actually yields better result
+
+                    params_to_update = []
+                    for name, param in self.policy.named_parameters():
+                        if 'value' in name and epoch > self.k_epochs // 2:  # update value-net later
+                            continue
+                        params_to_update.append(param)
+
+                    self.scaler.scale(loss).backward(retain_graph=True)
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+
+                else:
+                    # Evaluate old actions and values
+                    logprobs, state_values, dist_entropy = self.policy.evaluate(batch_states, batch_actions)
+
+                    # PPO clip objective
+                    ratios = torch.exp(logprobs - batch_logprobs.detach())
+
+                    surr1 = ratios * batch_advantages
+                    surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * batch_advantages
+
                     policy_loss = -torch.min(surr1, surr2).mean()
-                    value_loss = self.MseLoss(state_values.squeeze(), old_rewards)
-                    loss = policy_loss + 0.25 * value_loss - entropy_coef * dist_entropy # TODO: test if removing actually yields better result
+                    value_loss = self.MseLoss(state_values.squeeze(), batch_returns) # Assuming old_rewards are already returns
 
-                self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                    loss = policy_loss + 0.5 * value_loss - entropy_coef * dist_entropy
 
-            else:
-                # Evaluate old actions and values
-                logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
+                    params_to_update = []
+                    for name, param in self.policy.named_parameters():
+                        if 'value' in name and epoch > self.k_epochs // 2:  # update value-net later
+                            continue
+                        params_to_update.append(param)
 
-                # PPO clip objective
-                ratios = torch.exp(logprobs - old_logprobs.detach())
-
-                surr1 = ratios * advantages
-                surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
-
-                policy_loss = -torch.min(surr1, surr2).mean()
-                value_loss = self.MseLoss(state_values.squeeze(), old_rewards) # Assuming old_rewards are already returns
-
-                loss = policy_loss + 0.5 * value_loss - entropy_coef * dist_entropy
-
-                self.optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip) # Gradient Clipping
-                self.optimizer.step()
+                    self.optimizer.zero_grad(set_to_none=True)
+                    loss.backward(retain_graph=True)
+                    torch.nn.utils.clip_grad_norm_(params_to_update, self.max_gradient_clip)
+                    self.optimizer.step()
+                    #self.optimizer.zero_grad()
+                    #loss.backward()
+                    #torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip) # Gradient Clipping
+                    #self.optimizer.step()
         
         # Copy new weights into old policy
         self.policy_old.load_state_dict(self.policy.state_dict())

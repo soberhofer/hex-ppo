@@ -25,19 +25,25 @@ MAX_CLIPPING = 0.3
 
 MAX_TOTAL_TIMESTEPS = 1500000  # Total timesteps to train for
 TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
-UPDATES_PER_EVAL = 5        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
+UPDATES_PER_EVAL = 10        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
 UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2048 steps/update = ~500k steps)
 # LR Scheduler: step_size is now in terms of number of updates
 #LR_SCHEDULER_STEP_SIZE = 50 # Decay LR every X updates (e.g. 50 updates)
 #LR_SCHEDULER_GAMMA = 0.9    # Multiplicative factor of LR decay
 WARMUP_EPOCHS = int(0.2 * MAX_TOTAL_TIMESTEPS) # 20% of overall total steps
 
-RANDOM_OPPONENT_RATIO = 0.3 # Play against random opponent for this fraction of episodes in the beginning
-GREEDY_OPPONENT_RATIO = 0.3
-INITIAL_RATIO = 0.1
+RANDOM_OPPONENT_RATIO_EASY = 0.4 # Play against random opponent for this fraction of episodes in the beginning
+RANDOM_OPPONENT_RATIO_MEDIUM = 0.2
+RANDOM_OPPONENT_RATIO_HARD = 0.05
+GREEDY_OPPONENT_RATIO_EASY = 0.1
+GREEDY_OPPONENT_RATIO_MEDIUM = 0.15
+GREEDY_OPPONENT_RATIO_HARD = 0.25
 
+MAX_PATIENCE = 10
+AVG_REWARD_WINDOW = 50
 NUM_EVAL_GAMES = 200 # Number of games for periodic evaluation
 MODEL_DIR = "./models"
+BEST_MODEL_PATH = f"{MODEL_DIR}/ppo_hex_agent_update_best_so_far.pth"
 
 overall_best = [0.0]
 frozen_agent_list = []
@@ -164,7 +170,7 @@ def ppo_action_from_policy(board, valid_actions: list, policy_net: torch.nn.Modu
 def save_model(agent, num_updates, win_rate, specific_agent = ""):
     model_path = os.path.join(MODEL_DIR, f"ppo_hex_agent_update_{num_updates}{specific_agent}_{win_rate}.pth")
     torch.save(agent.state_dict(), model_path)
-    print(f"Model saved to {model_path}")
+    #print(f"Model saved to {model_path}")
 
 best_results_for_each_agent = {}
 
@@ -184,7 +190,7 @@ def update_best_agent_stats(random_win_rate: float, timesteps_collected: int, cu
         best_results_for_each_agent[agent_key]["updates"] += 1
         save_model(ppo_policy_net, timesteps_collected, random_win_rate, f"_best_against_{current_agent}")
 
-def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: int, num_games=100):
+def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: int, last_win_rate: float, num_games=50):
     """
     Evaluate against 50 random games and 50 x agents in frozen_agents games against frozen agents
     """
@@ -193,110 +199,150 @@ def evaluate_mixed(ppo_policy_net, device, env: HexEnv, time_steps_collected: in
     print(f"\n--- Evaluating PPO Agent vs Random (50) + Frozen Agents ({len(frozen_agent_list)} total, 50 games) ---")
 
     stats = {
-        Opponents.RANDOM: {"wins": 0, "games": 0},
-        Opponents.FROZEN_SELF: [{"wins": 0, "games": 0} for _ in frozen_agent_list]
+        Opponents.RANDOM: {"wins": 0, "games": 0, 'wins_as_white': 0, 'wins_as_black': 0, 'win_rate': 0.0},
+        Opponents.FROZEN_SELF: [{"wins": 0, "games": 0, 'wins_as_white': 0, 'wins_as_black': 0, 'win_rate': 0.0} for _ in frozen_agent_list],
+        Opponents.GREEDY: {"wins": 0, "games": 0, 'wins_as_white': 0, 'wins_as_black': 0, 'win_rate': 0.0},
+        Opponents.SELF: {"wins": 0, "games": 0, 'wins_as_white': 0, 'wins_as_black': 0, 'win_rate': 0.0},
+        'overall': {'wins': 0, 'games': num_games * (len(frozen_agent_list) + num_games)},
+        'historical_comparison': {}
     }
 
     ppo_policy_net.eval()
     game_engine = hexPosition(size=HEX_BOARD_SIZE)
 
-    total_games = 50 + 50 * len(frozen_agent_list)
+    def play_game(opponent_policy_fn, stats_entry):
+        for i in range(num_games):
+            game_engine.reset()
+            ppo_as_player = 1 if i % 2 == 0 else -1
+            game_engine.player = 1
 
-    for i in range(total_games):
-        game_engine.reset()
-        ppo_as_player = 1 if i % 2 == 0 else -1
-        game_engine.player = 1
+            while game_engine.winner == 0:
+                current_board = torch.FloatTensor(game_engine.board).unsqueeze(0).unsqueeze(1).to(device)
+                valid_actions = game_engine.get_action_space()
 
-        if i < 50:
-            opponent_type = Opponents.RANDOM
-            frozen_idx = None
-        else:
-            # From 50 onward: evaluate each frozen agent 50 times
-            opponent_idx = (i - 50) // 50  # 0, 1, 2, ...
-            opponent_type = f"frozen_{opponent_idx}"
-
-        while game_engine.winner == 0:
-            current_board = torch.FloatTensor(game_engine.board).unsqueeze(0).unsqueeze(1).to(device)
-            valid_actions = game_engine.get_action_space()
-
-            is_ppo_turn = (game_engine.player == 1 and ppo_as_player == 1) or \
-                          (game_engine.player == -1 and ppo_as_player == -1)
-
-            if is_ppo_turn:
-                action = ppo_action_from_policy(current_board, valid_actions, ppo_policy_net, device, env)
-            else:
-                if opponent_type == Opponents.RANDOM:
-                    action = random.choice(valid_actions)
+                if (game_engine.player == 1 and ppo_as_player == 1) or \
+                        (game_engine.player == -1 and ppo_as_player == -1):
+                    action = ppo_action_from_policy(current_board, valid_actions, ppo_policy_net, device, env)
                 else:
-                    frozen_agent = frozen_agent_list[opponent_idx][1]
+                    action = opponent_policy_fn(current_board, valid_actions)
+                    if type(action) == int:
+                        action = env.hex_game.scalar_to_coordinates(action)
+
+                game_engine.move(action)
+                game_engine.evaluate()
+
+            stats_entry['games'] += 1
+            if game_engine.winner == ppo_as_player:
+                stats_entry['wins'] += 1
+                stats['overall']['wins'] += 1
+                if ppo_as_player == 1:
+                    stats_entry['wins_as_white'] += 1
+                else:
+                    stats_entry['wins_as_black'] += 1
+
+        # --- Evaluate against random ---
+
+    #print("Evaluating against RANDOM...")
+    play_game(lambda board, valid: random.choice(valid), stats[Opponents.RANDOM])
+    # --- Evaluate against greedy ---
+    #print("Evaluating against GREEDY...")
+    play_game(lambda board, valid: greedy_action(board, valid, ppo_policy_net, device, env),
+              stats[Opponents.GREEDY])
+    # --- Evaluate against self ---
+    #print("Evaluating against SELF (mirror match)...")
+    play_game(lambda board, valid: ppo_action_from_policy(board, valid, ppo_policy_net, device, env),
+              stats[Opponents.SELF])
+
+    # --- Evaluate against frozen agents ---
+    for idx, (update_step, frozen_agent) in enumerate(frozen_agent_list):
+        #print(f"Evaluating against FROZEN agent @ step {update_step}...")
+        for i in range(num_games):
+            game_engine.reset()
+            ppo_as_player = 1 if i % 2 == 0 else -1
+            game_engine.player = 1
+
+            while game_engine.winner == 0:
+                current_board = torch.FloatTensor(game_engine.board).unsqueeze(0).unsqueeze(1).to(device)
+                valid_actions = game_engine.get_action_space()
+
+                if (game_engine.player == 1 and ppo_as_player == 1) or \
+                        (game_engine.player == -1 and ppo_as_player == -1):
+                    action = ppo_action_from_policy(current_board, valid_actions, ppo_policy_net, device, env)
+                else:
                     action = ppo_action_from_policy(current_board, valid_actions, frozen_agent.policy, device, env)
 
-            game_engine.move(action)
-            game_engine.evaluate()
+                game_engine.move(action)
+                game_engine.evaluate()
 
-        # Count result
-        if game_engine.winner == ppo_as_player:
-            if opponent_type == Opponents.RANDOM:
-                stats[Opponents.RANDOM]["wins"] += 1
-            else:
-                idx = int(opponent_type.split("_")[1])
-                stats[Opponents.FROZEN_SELF][idx]["wins"] += 1
+            stats[Opponents.FROZEN_SELF][idx]['games'] += 1
+            if game_engine.winner == ppo_as_player:
+                stats[Opponents.FROZEN_SELF][idx]['wins'] += 1
+                stats['overall']['wins'] += 1
+                if ppo_as_player == 1:
+                    stats[Opponents.FROZEN_SELF][idx]['wins_as_white'] += 1
+                else:
+                    stats[Opponents.FROZEN_SELF][idx]['wins_as_black'] += 1
 
-        if opponent_type == Opponents.RANDOM:
-            stats[Opponents.RANDOM]["games"] += 1
-        else:
-            idx = int(opponent_type.split("_")[1])
-            stats[Opponents.FROZEN_SELF][idx]["games"] += 1
+    header = f"{'Opponent':<20} {'WINS':<10} {'BLACK/WHITE Wins':<35} {'WIN RATE':<8}"
+    print(header)
+    print("-" * len(header))
+    for opponent in [Opponents.RANDOM, Opponents.GREEDY, Opponents.SELF]:
+        wins, games = stats[opponent]['wins'], stats[opponent]['games']
+        wins_as_black = stats[opponent]['wins_as_black']
+        wins_as_white = stats[opponent]['wins_as_white']
+        win_rate = wins / max(1, games)
+        stats[opponent]['win_rate'] = round(win_rate, 2)
 
-    # --- Report results ---
-    print("--- Evaluation Results ---")
+        print(
+            f"{opponent:<20} {wins:>2} / {games:<6} [BLACK: {wins_as_black:<2} / WHITE: {wins_as_white:<2}]".ljust(45) +
+            f"{win_rate:.2f}".rjust(10))
+        update_best_agent_stats(win_rate, time_steps_collected, opponent, opponent, ppo_policy_net)
 
-    random_wins, random_games = stats[Opponents.RANDOM]["wins"], stats[Opponents.RANDOM]["games"]
-    random_win_rate = random_wins / max(1, random_games)
-    print(f"Random Opponent: {random_wins} / {random_games} wins ({random_win_rate:.2f})")
-
-    update_best_agent_stats(random_win_rate, time_steps_collected, Opponents.RANDOM, Opponents.RANDOM, ppo_policy_net)
-
-    agents = [agent[0] for agent in frozen_agent_list]
     current_win_rate_frozen = 0
     for i, frozen_stat in enumerate(stats[Opponents.FROZEN_SELF]):
         wins, games = frozen_stat["wins"], frozen_stat["games"]
         win_rate = wins / max(1, games)
-        agent = str(agents[i])
+        update_step = frozen_agent_list[i][0]
+        frozen_stat['win_rate'] = round(win_rate, 2)
+        label = f"Frozen Agent {update_step}"
+        print(f"{label:<20} {wins:>2} / {games:<6} [BLACK: {wins_as_black:<2} / WHITE: {wins_as_white:<2}]".ljust(45) +
+              f"{win_rate:.2f}".rjust(10))
         current_win_rate_frozen += win_rate
+        update_best_agent_stats(win_rate, time_steps_collected, f"{Opponents.FROZEN_SELF}{update_step}", update_step, ppo_policy_net)
 
-        print(f"Frozen Agent {agent}: {wins} / {games} wins ({win_rate:.2f})")
+    # weight the win rates according to how much agent was trained with it
+    all_opponents = sum(opponent_counts.values())
+    random_ratio = round(opponent_counts[Opponents.RANDOM] / all_opponents, 2)
+    greedy_ratio = round(opponent_counts[Opponents.GREEDY] / all_opponents, 2)
+    frozen_ratio = round(opponent_counts[Opponents.FROZEN_SELF] / all_opponents, 2)
+    self_ratio = round(opponent_counts[Opponents.SELF] / all_opponents, 2)
 
-        update_best_agent_stats(win_rate, time_steps_collected, Opponents.FROZEN_SELF+agent, agent, ppo_policy_net)
+    current_win_rate = round(current_win_rate_frozen*frozen_ratio +
+                             stats[Opponents.SELF]['win_rate']*self_ratio +
+                             stats[Opponents.GREEDY]['win_rate']*greedy_ratio +
+                             stats[Opponents.RANDOM]['win_rate']*random_ratio,
+                             2)
 
-    print(current_win_rate_frozen + random_win_rate)
-    print(len(frozen_agent_list) +1 )
-    current_win_rate = round((current_win_rate_frozen + random_win_rate)/ (len(frozen_agent_list) + 1), 2)
-    rate = 0
-    count = 0
-    """for key, items in best_results_for_each_agent.items():
-        print(items['win_rate'])
-        count += 1
-        rate += items['win_rate']"""
-
-    # print("elements in best results", count)
-    # rate = round((rate / count),2)
-
-
-    print("Best Win rate overall: ", overall_best[0] )
-    print("Current win rate overall: ", current_win_rate)
+    print(f"Current weighted win rate overall: { current_win_rate} \n")
+    print(f"Ratios are: random {random_ratio}, greedy {greedy_ratio}, frozen {frozen_ratio}, self {self_ratio}")
+    print("Best weighted win rate overall: ", overall_best[0])
     print("Played opponents count so far: ", opponent_counts)
-    if current_win_rate > overall_best[0]:
-        print(overall_best[0])
-        overall_best.pop(0)
-        overall_best.append(current_win_rate)
-        save_model(ppo_policy_net, time_steps_collected, overall_best[0],"_overall")
 
-    print("Best Win rate overall after update: ", overall_best[0])
+    if not hasattr(evaluate_mixed, 'win_history'):
+        evaluate_mixed.win_history = []
+    evaluate_mixed.win_history.append(current_win_rate)
+    if len(evaluate_mixed.win_history) > 3:
+        evaluate_mixed.win_history.pop(0)
+
+    moving_avg = np.mean(evaluate_mixed.win_history)
+    print(f"3-Eval Moving Avg: {moving_avg:.2f}")
+    if current_win_rate > overall_best[0]:
+        overall_best[0] = current_win_rate
+        save_model(ppo_policy_net, time_steps_collected, overall_best[0], "_overall")
 
     print("--- Evaluation Finished ---\n")
     ppo_policy_net.train()
-    return stats
+    return current_win_rate, moving_avg, stats
 
 def freeze_agent_and_reset_policy(frozen_agent, agent, env, device, num_updates):
     """"
@@ -305,7 +351,7 @@ def freeze_agent_and_reset_policy(frozen_agent, agent, env, device, num_updates)
     frozen_agent = copy.deepcopy(agent)
 
     # TODO: check if this can lead to memory problems
-    if len(frozen_agent_list) == 4:
+    if len(frozen_agent_list) == 3:
         frozen_agent_list.pop(0)    # remove first
 
     frozen_agent_list.append((num_updates, frozen_agent))
@@ -397,44 +443,69 @@ def get_temperature(total_timesteps_collected):
     return FINAL_TEMPERATURE + (TEMPERATURE - FINAL_TEMPERATURE) * np.exp(-5 * progress)
 
 
-def get_random_opp_prob(current_step, initial_prob=RANDOM_OPPONENT_RATIO):
-    # start at RANDOM_OPPONENT_RATIO, decrease over time
-    return initial_prob * (1 - current_step / MAX_TOTAL_TIMESTEPS)
+def get_entropy_coef(current_step, current_win_rate):
+    base_coef = ENTROPY_COEF_INITIAL - (ENTROPY_COEF_INITIAL - ENTROPY_COEF_FINAL) * (
+                current_step / MAX_TOTAL_TIMESTEPS)
+
+    # support more exploration if win_rate is low
+    if current_win_rate < 0.5:
+        return min(0.05, base_coef * 1.3)  # explore more
+    elif current_win_rate > 0.7:
+        return max(ENTROPY_COEF_FINAL, base_coef * 0.8)  # explore less
+    return base_coef ## else return coef based on progress
 
 
-def get_entropy_coef(current_step, initial=ENTROPY_COEF_INITIAL, final=ENTROPY_COEF_FINAL):
-    # entropy coeff annealing --> supports more exploration in the beginning, reduced throughout training
-    return initial - (initial - final) * (current_step / MAX_TOTAL_TIMESTEPS)
-
-
-def get_ratios(total_timesteps_collected: int):
-    # Determine opponent for the new episode
+def get_ratios(total_timesteps_collected: int, current_win_rate: float):
     progress = min(total_timesteps_collected / MAX_TOTAL_TIMESTEPS, 1.0)
-    #print(progress)
+    difficulty = get_opponent_difficulty(current_win_rate, progress)
 
-    if progress < 0.33:
-        frozen_ratio_multiplier = 0.25
+    if difficulty == 'easy':
+        random_ratio = RANDOM_OPPONENT_RATIO_EASY
+        greedy_ratio = GREEDY_OPPONENT_RATIO_EASY
         self_ratio_multiplier = 0.75
-        random_ratio = RANDOM_OPPONENT_RATIO
-        greedy_ratio = INITIAL_RATIO
-    elif progress < 0.66:
-        frozen_ratio_multiplier = 0.4
+        frozen_ratio_multiplier = 0.25
+    elif difficulty == 'medium':
+        random_ratio = RANDOM_OPPONENT_RATIO_MEDIUM
+        greedy_ratio = GREEDY_OPPONENT_RATIO_MEDIUM
         self_ratio_multiplier = 0.6
-        random_ratio = RANDOM_OPPONENT_RATIO / 2
-        greedy_ratio = GREEDY_OPPONENT_RATIO / 2
-    else:
-        frozen_ratio_multiplier = 0.5
+        frozen_ratio_multiplier = 0.4
+    elif difficulty == 'hard':
+        random_ratio = RANDOM_OPPONENT_RATIO_HARD
+        greedy_ratio = GREEDY_OPPONENT_RATIO_HARD
         self_ratio_multiplier = 0.5
-        random_ratio = INITIAL_RATIO
-        greedy_ratio = GREEDY_OPPONENT_RATIO
+        frozen_ratio_multiplier = 0.5
 
     remaining = max(0.0, 1.0 - random_ratio - greedy_ratio)
-
-    self_ratio =  self_ratio_multiplier * remaining
+    self_ratio = self_ratio_multiplier * remaining
     frozen_ratio = frozen_ratio_multiplier * remaining
+
     rand_val = random.random()
-    # print(rand_val, random_ratio, greedy_ratio, self_ratio, frozen_ratio)
     return rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio
+
+def get_opponent_difficulty(current_win_rate: float, progress: float) -> str:
+    """
+    Combines progress and performance to determine difficulty.
+    """
+    if progress < 0.33:
+        if current_win_rate > 0.6:
+            return 'medium'
+        else:
+            return 'easy'
+    elif progress < 0.66:
+        if current_win_rate > 0.7:
+            return 'hard'
+        elif current_win_rate > 0.5:
+            return 'medium'
+        else:
+            return 'easy'
+    else:
+        if current_win_rate > 0.6:
+            return 'hard'
+        elif current_win_rate > 0.4:
+            return 'medium'
+        else:
+            return 'easy'
+
 
 def train(with_periodic_self: bool = True, with_random: bool = True):
     device = get_device()
@@ -464,15 +535,18 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
     print(f"Batch size: {TIMESTEPS_PER_BATCH}, Updates per batch: {K_EPOCHS}")
 
     if with_random:
-        print(f"Playing against random opponent with initially {RANDOM_OPPONENT_RATIO*100}% probability.")
+        print(f"Playing against random opponent with initially {RANDOM_OPPONENT_RATIO_EASY*100}% probability.")
 
     total_timesteps_collected = 0
     num_updates = 0
     all_episode_rewards = []
     state, info = env.reset()
     current_episode_reward_accumulator = 0.0
+    best_moving_avg = 0.0
+    patience_counter = 0
+    current_win_rate = 0.0
 
-    rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio = get_ratios(total_timesteps_collected)
+    rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio = get_ratios(total_timesteps_collected, current_win_rate)
     opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, frozen_ratio, greedy_ratio, self_ratio)
 
     ppo_agent_player_id = 1 # Default, will be set if opponent is random
@@ -538,7 +612,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                 state, info = env.reset()
 
                 # Determine opponent for the new episode
-                rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio = get_ratios(total_timesteps_collected)
+                rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio = get_ratios(total_timesteps_collected, current_win_rate)
                 opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, frozen_ratio, greedy_ratio, self_ratio)
 
                 if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF, Opponents.GREEDY]:
@@ -551,19 +625,29 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
         # ---- update training
         if len(memory.states) > 0:
-            entropy_coef = get_entropy_coef(total_timesteps_collected)
+            entropy_coef = get_entropy_coef(total_timesteps_collected, current_win_rate)
             #print("Entropy Coefficient: ", entropy_coef)
-            p_loss, v_loss, ent, combined_loss = agent.update(memory, entropy_coef)
+            p_loss, v_loss, ent, combined_loss = agent.update(memory, entropy_coef, 512)
             memory.clear_memory()
             num_updates += 1
 
             # LR updates --> correct scheduler should get increased
             # update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, v_loss)
             # last x rewards mean
-            avg_rewards = np.mean(all_episode_rewards[-15:])
+            avg_rewards = np.mean(all_episode_rewards[-AVG_REWARD_WINDOW:])
 
             # try to update scheduler based on increasing rewards
-            update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, combined_loss, avg_rewards) # if loss is used, set reduceonplateaulrscheduler to mode='min'
+            update_scheduler(num_updates, warmup_scheduler, plateau_scheduler, combined_loss,
+                             avg_rewards)  # if loss is used, set reduceonplateaulrscheduler to mode='min'
+
+            if len(all_episode_rewards) > AVG_REWARD_WINDOW:
+                policy_grad_norm = torch.nn.utils.clip_grad_norm_(agent.policy.parameters(), MAX_CLIPPING)
+
+                if policy_grad_norm > 0.25:
+                    print(f"High gradient norms! Policy: {policy_grad_norm:.4f}")
+                    # reduce learning rate
+                    for g in agent.optimizer.param_groups:
+                        g['lr'] *= 0.9
 
 
             # --- log outputs every ten updates
@@ -571,7 +655,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                 current_lr = agent.optimizer.param_groups[0]['lr']
                 avg_ep_reward_str = ""
                 if len(all_episode_rewards) > 0:
-                    lookback_episodes = min(50, len(all_episode_rewards))
+                    lookback_episodes = min(AVG_REWARD_WINDOW, len(all_episode_rewards))
                     avg_recent_ep_reward = np.mean(all_episode_rewards[-lookback_episodes:])
                     avg_ep_reward_str = f", Avg Ep Reward (last ~{lookback_episodes}): {avg_recent_ep_reward:.2f}"
 
@@ -580,7 +664,27 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
 
             # --- periodic evaluation
             if num_updates > 0 and num_updates % UPDATES_PER_EVAL == 0:
-                evaluate_mixed(agent.policy, device, env, num_updates)
+
+                current_win_rate, moving_avg, stats = evaluate_mixed(agent.policy, device, env, num_updates, current_win_rate)
+                if moving_avg > best_moving_avg + 0.02:  # win rate avg got better
+                    best_moving_avg = moving_avg
+                    patience_counter = 0
+                    torch.save(agent.policy.state_dict(), BEST_MODEL_PATH)
+
+
+                else:                                   # win rate avg stagnates or gets worse
+                    patience_counter += 1
+                    if patience_counter >= MAX_PATIENCE:
+                        print(f"No improvement for {MAX_PATIENCE} evaluations. Restoring best model.")
+                        # Load best model
+                        agent.policy.load_state_dict(torch.load(BEST_MODEL_PATH))
+                        # reduce learning rate hard
+                        for g in agent.optimizer.param_groups:
+                            g['lr'] *= 0.7
+                        patience_counter = 0
+
+
+
                 #evaluate_against_random(agent.policy, device, env, NUM_EVAL_GAMES)
 
             # --- periodic model saving
