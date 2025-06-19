@@ -11,22 +11,23 @@ import time
 import copy
 
 # Hyperparameters
-TEMPERATURE = 1.0
-FINAL_TEMPERATURE = 1.0
+TEMPERATURE = 1.3
+FINAL_TEMPERATURE = 0.7
 HEX_BOARD_SIZE = 7
-INITIAL_LEARNING_RATE = 0.0003 # this is the learning rate up until linear warm up goes
+INITIAL_LEARNING_RATE = 0.0003 # this is the learning rate
 GAMMA = 0.99
 K_EPOCHS = 8
 EPS_CLIP = 0.15
-GAE_LAMBDA = 0.92           # bias in advantage estimates
-ENTROPY_COEF_INITIAL = 0.03 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
+GAE_LAMBDA = 0.95           # bias in advantage estimates
+ENTROPY_COEF_INITIAL = 0.04 # higher means more exploration in the beginning, gets reduced throughout training with each update in ppo agent
 ENTROPY_COEF_FINAL = 0.002
 MAX_CLIPPING = 0.25
 VALUE_COEF = 0.4
 MAX_PATIENCE = 10
+MAX_LEN_FROZEN_AGENTS = 3
 
 MAX_TOTAL_TIMESTEPS = 1500000  # Total timesteps to train for
-TIMESTEPS_PER_BATCH = 2048   # Timesteps to collect per batch before updating
+TIMESTEPS_PER_BATCH = 4096   # Timesteps to collect per batch before updating
 UPDATES_PER_EVAL = 10        # Evaluate model every X updates (e.g., 50 updates * 2048 steps/update = ~100k steps)
 UPDATES_PER_SAVE = 250       # Save model every X updates (e.g., 250 updates * 2048 steps/update = ~500k steps)
 # LR Scheduler: step_size is now in terms of number of updates
@@ -44,7 +45,7 @@ GREEDY_OPPONENT_RATIO_HARD = 0.3
 
 AVG_REWARD_WINDOW = 50
 NUM_EVAL_GAMES = 200 # Number of games for periodic evaluation
-MODEL_DIR = "./models"
+MODEL_DIR = "./models_withReward"
 BEST_MODEL_PATH = f"{MODEL_DIR}/ppo_hex_agent_update_best_so_far.pth"
 PERIODIC_REPLACE_COUNTER = 75
 
@@ -63,6 +64,14 @@ opponent_counts = {
     Opponents.FROZEN_SELF: 0,
     Opponents.GREEDY: 0,
 }
+
+opponent_counts_per_eval_loop = {
+    Opponents.RANDOM: 0,
+    Opponents.SELF: 0,
+    Opponents.FROZEN_SELF: 0,
+    Opponents.GREEDY: 0,
+}
+
 
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True  # auto-tuner for CNNs
@@ -303,7 +312,6 @@ def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_ga
         update_best_agent_stats(win_rate, time_steps_collected, opponent, opponent, agent)
 
     current_win_rate_frozen = 0
-    count = 0
     for i, frozen_stat in enumerate(stats[Opponents.FROZEN_SELF]):
         wins, games = frozen_stat["wins"], frozen_stat["games"]
         win_rate = wins / max(1, games)
@@ -315,7 +323,6 @@ def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_ga
         current_win_rate_frozen += win_rate
         update_best_agent_stats(win_rate, time_steps_collected, f"{Opponents.FROZEN_SELF}{update_step}", update_step,
                                 agent)
-        count +=1
 
     # weight the win rates according to how much agent was trained with it
     all_opponents = sum(opponent_counts.values())
@@ -324,7 +331,7 @@ def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_ga
     frozen_ratio = round(opponent_counts[Opponents.FROZEN_SELF] / all_opponents, 2)
     self_ratio = round(opponent_counts[Opponents.SELF] / all_opponents, 2)
 
-    frozen_normalized =round((current_win_rate_frozen/count), 2)
+    frozen_normalized =round((current_win_rate_frozen/MAX_LEN_FROZEN_AGENTS), 2)
 
     current_win_rate = round(frozen_normalized*frozen_ratio +
                              stats[Opponents.SELF]['win_rate']*self_ratio +
@@ -333,11 +340,12 @@ def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_ga
                              2)
 
     print(f"Current weighted win rate overall: { current_win_rate} \n")
-    print(f"Ratios are: random {stats[Opponents.RANDOM]['win_rate'] } * {random_ratio}, greedy {stats[Opponents.GREEDY]['win_rate']} * {greedy_ratio},"
+    print(f"Ratios are: random {stats[Opponents.RANDOM]['win_rate'] } * {random_ratio}, "
+          f"greedy {stats[Opponents.GREEDY]['win_rate']} * {greedy_ratio},"
           f" frozen {frozen_normalized} * {frozen_ratio}"
           f", self {stats[Opponents.SELF]['win_rate']} * {self_ratio}")
     print("Best weighted win rate overall: ", overall_best[-1])
-    print("Played opponents count so far: ", opponent_counts)
+    print("Played opponents in this eval loop: ", opponent_counts)
 
     if not hasattr(evaluate_mixed, 'win_history'):
         evaluate_mixed.win_history = []
@@ -363,7 +371,7 @@ def freeze_agent_and_reset_policy(agent, env, device, num_updates):
     frozen_agent = copy.deepcopy(agent)
 
     # TODO: check if this can lead to memory problems
-    if len(frozen_agent_list) == 3: # check against latest three
+    if len(frozen_agent_list) == MAX_LEN_FROZEN_AGENTS: # check against latest x
         frozen_agent_list.pop(0)    # remove first
 
     frozen_agent_list.append((num_updates, frozen_agent))
@@ -389,18 +397,23 @@ def determine_opponent(with_random: bool, with_periodic_self: bool, rand_val: fl
     if with_random and rand_val < random_cutoff:
         #print("CHOOSE RANDOM")
         opponent_counts[Opponents.RANDOM] += 1
+        opponent_counts_per_eval_loop[Opponents.RANDOM] += 1
+
         return Opponents.RANDOM
     elif with_periodic_self and rand_val < frozen_cutoff:
         #print("CHOOSE PERIODIC")
         opponent_counts[Opponents.FROZEN_SELF] += 1
+        opponent_counts_per_eval_loop[Opponents.FROZEN_SELF] += 1
         return Opponents.FROZEN_SELF
     elif rand_val < greedy_cutoff:
         #print("CHOOSE GREEDY")
         opponent_counts[Opponents.GREEDY] += 1
+        opponent_counts_per_eval_loop[Opponents.GREEDY] += 1
         return Opponents.GREEDY
     else:
         #print("CHOOSE SELF")
         opponent_counts[Opponents.SELF] += 1
+        opponent_counts_per_eval_loop[Opponents.SELF] += 1
         return Opponents.SELF
 
 
@@ -468,8 +481,8 @@ def get_entropy_coef(current_step, current_win_rate):
     return base_coef ## else return coef based on progress
 
 
-def get_ratios(num_updates: int, current_win_rate: float):
-    if current_win_rate < 0.4:
+def get_ratios(mvg_average: float, current_win_rate: float):
+    if mvg_average < 0.5:
         random_ratio = RANDOM_OPPONENT_RATIO_EASY
         greedy_ratio = GREEDY_OPPONENT_RATIO_EASY
         if len(frozen_agent_list) >= 1:
@@ -479,7 +492,7 @@ def get_ratios(num_updates: int, current_win_rate: float):
             self_ratio_multiplier = 1.0
             frozen_ratio_multiplier = 0.0
 
-    elif current_win_rate < 0.7:
+    elif mvg_average < 0.75:
         random_ratio = RANDOM_OPPONENT_RATIO_MEDIUM
         greedy_ratio = GREEDY_OPPONENT_RATIO_MEDIUM
         if len(frozen_agent_list) >= 1:
@@ -499,10 +512,18 @@ def get_ratios(num_updates: int, current_win_rate: float):
             self_ratio_multiplier = 1.0
             frozen_ratio_multiplier = 0.0
 
+    if current_win_rate < 0.5:
+        # support more exploration
+        random_ratio = min(0.6, random_ratio + 0.2)
+        greedy_ratio = max(0.05, greedy_ratio - 0.1)
+    elif current_win_rate > 0.75:
+        # more finetuning
+        random_ratio = max(0.05, random_ratio - 0.1)
+        greedy_ratio = max(0.1, greedy_ratio - 0.1)
+
     remaining = max(0.0, 1.0 - random_ratio - greedy_ratio)
     self_ratio = self_ratio_multiplier * remaining
     frozen_ratio = frozen_ratio_multiplier * remaining
-    # frozen_ratio = 0.0
 
     rand_val = random.random()
     return rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio
@@ -551,19 +572,18 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
     best_moving_avg = 0.0
     patience_counter = 0
     current_win_rate = 0.0
+    moving_avg = 0.0
     episode_count = 0
-    episode_reward_sum = 0.0
     episode_length_sum = 0
 
     episode_wins = {
-        # (win, lose)
-        Opponents.GREEDY: (0, 0),
-        Opponents.RANDOM: (0, 0),
-        Opponents.FROZEN_SELF: (0, 0),
-        Opponents.SELF: (0, 0),
+        Opponents.GREEDY: 0,
+        Opponents.RANDOM: 0,
+        Opponents.FROZEN_SELF: 0,
+        Opponents.SELF: 0,
     }
 
-    rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio = get_ratios(num_updates, current_win_rate)
+    rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio = get_ratios(moving_avg, current_win_rate)
     opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, frozen_ratio, greedy_ratio, self_ratio)
 
     ppo_agent_player_id = 1 # Default, will be set if opponent is random
@@ -629,20 +649,17 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                 winner = env.hex_game.winner
                 agent_won = (winner == ppo_agent_player_id)
                 episode_count +=1
-                episode_reward_sum += current_episode_reward_accumulator
                 episode_length_sum += env.hex_game.move_count
-                wins = episode_wins[opponent_type][0]
-                defeats = episode_wins[opponent_type][1]
+
                 if agent_won:
-                    episode_wins[opponent_type] = (wins + 1, defeats)
-                else:
-                    episode_wins[opponent_type] = (wins, defeats +1 )
+                    episode_wins[opponent_type] += 1
+
                 #print( f"[Episode End] Reward: {current_episode_reward_accumulator:.2f}, Length: {episode_length}, Winner: {winner}, PPO Agent ID: {ppo_agent_player_id}, Opponent: {opponent_type}, Agent won: {agent_won}")
 
                 state, info = env.reset()
                 current_episode_reward_accumulator = 0.0
                 # Determine opponent for the new episode
-                rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio = get_ratios(num_updates, current_win_rate)
+                rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio = get_ratios(moving_avg, current_win_rate)
                 opponent_type = determine_opponent(with_random, with_periodic_self, rand_val, random_ratio, frozen_ratio, greedy_ratio, self_ratio)
 
                 if opponent_type in [Opponents.RANDOM, Opponents.FROZEN_SELF, Opponents.GREEDY]:
@@ -683,37 +700,50 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                 print(f"Update {num_updates}, Timesteps: {total_timesteps_collected}, LR: {current_lr:.7f}{avg_ep_reward_str}")
                 print(f"  Losses: Policy: {p_loss:.4f}, Value: {v_loss:.4f}, Entropy: {ent:.4f}")
                 if episode_count > 0:
-                    avg_reward = episode_reward_sum / episode_count
+                    avg_reward = np.mean(all_episode_rewards)
                     avg_length = episode_length_sum / episode_count
 
                     # using the precalculated ratios might not give a full picture but suffices for now
-                    greedy = round(episode_wins[Opponents.GREEDY][0]*greedy_ratio, 2)
-                    random_agent = round(episode_wins[Opponents.RANDOM][0]*random_ratio, 2)
-                    frozen = round(episode_wins[Opponents.FROZEN_SELF][0]*frozen_ratio, 2)
-                    self = round(episode_wins[Opponents.SELF][0] * self_ratio, 2)
+                    greedy = round(episode_wins[Opponents.GREEDY]/opponent_counts_per_eval_loop[Opponents.GREEDY], 2)
+                    random_agent = round(episode_wins[Opponents.RANDOM]/opponent_counts_per_eval_loop[Opponents.RANDOM], 2)
+                    frozen = round(episode_wins[Opponents.FROZEN_SELF]/opponent_counts_per_eval_loop[Opponents.FROZEN_SELF], 2)
+                    self = round(episode_wins[Opponents.SELF]/opponent_counts_per_eval_loop[Opponents.SELF], 2)
 
-                    win_rate = (greedy + random_agent + frozen + self) / episode_count * 100
+                    print(f"  "   
+                          f"random {random_agent} * {round(random_ratio, 2)} "
+                          f"| self {self} * {round(self_ratio, 2)}"
+                          f"| frozen {frozen} * {round(frozen_ratio, 2)} "
+                          f"| greedy {greedy} * {round(greedy_ratio, 2)} "
+                          )
+
+                    win_rate = (greedy * round(greedy_ratio, 2) + random_agent * round(random_ratio, 2) + frozen * round(frozen_ratio, 2) + self * round(self_ratio, 2))*100
 
                     print(f"  Episodes Played: {episode_count}, Complete Training Avg Reward: {avg_reward:.2f}, Training Avg Length: {avg_length:.1f}, Weighted Training Win Rate: {win_rate:.1f}%")
-                    print(f"  (Win/Lose)/Trained Ratio per agent: greedy {episode_wins[Opponents.GREEDY]} | {greedy_ratio}, "
-                          f"random {episode_wins[Opponents.RANDOM]} | {random_ratio}, "
-                          f"self {episode_wins[Opponents.SELF]} | {self_ratio}, "
-                          f"frozen self {episode_wins[Opponents.FROZEN_SELF]} | {frozen_ratio}")
+                    """print(f"  Wins/Trained Ratio per agent: "
+                        f"random {episode_wins[Opponents.RANDOM]} | {random_ratio}, "
+                        f"self {episode_wins[Opponents.SELF]} | {self_ratio}, "
+                        f"frozen self {episode_wins[Opponents.FROZEN_SELF]} | {frozen_ratio} "
+                        f"greedy {episode_wins[Opponents.GREEDY]} | {greedy_ratio}, "
+                    )"""
+                    print("  Played opponents: ", opponent_counts_per_eval_loop)
+                    for key, _ in opponent_counts_per_eval_loop.items():
+                        opponent_counts_per_eval_loop[key] = 0
 
                     episode_count = 0
-                    episode_reward_sum = 0.0
                     episode_length_sum = 0
                     episode_wins = {
-                        Opponents.GREEDY: (0, 0),
-                        Opponents.RANDOM: (0, 0),
-                        Opponents.FROZEN_SELF: (0, 0),
-                        Opponents.SELF: (0, 0),
+                        Opponents.GREEDY: 0,
+                        Opponents.RANDOM: 0,
+                        Opponents.FROZEN_SELF: 0,
+                        Opponents.SELF: 0,
                     }
 
             # --- periodic evaluation
             if num_updates > 0 and num_updates % UPDATES_PER_EVAL == 0:
 
                 current_win_rate, moving_avg, stats = evaluate_mixed(agent, device, env, num_updates)
+                for key, _ in opponent_counts.items():
+                    opponent_counts[key] = 0
                 if moving_avg > best_moving_avg + 0.02:  # win rate avg got better
                     best_moving_avg = moving_avg
                     patience_counter = 0
@@ -736,11 +766,15 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
         if total_timesteps_collected >= MAX_TOTAL_TIMESTEPS:
             break
 
+    save_model(agent.policy, num_updates, "", "last_save")
     env.close()
     for key, item in best_results_for_each_agent.items():
         print(f"{key} Best: {item}")
 
+    print("Collected updates: ", num_updates)
     print(overall_best)
+
+
 
     print("Training finished.")
 
