@@ -6,7 +6,7 @@ from gymnasium import spaces
 import numpy as np
 from hex_engine import hexPosition
 
-WITH_REWARD_SHAPING = False # set to false if no reward shaping wanted
+WITH_REWARD_SHAPING = True # set to false if no reward shaping wanted
 if WITH_REWARD_SHAPING:
     MAX_REWARD = 2.0
     MOVE_PENALTY_SINGLE_VALUE = 0.0  # should be in good relation to max reward (i.e., if max reward 1, 0.002 is better)
