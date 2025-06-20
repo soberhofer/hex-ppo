@@ -1,8 +1,9 @@
+import numpy as np
 import torch
 import os
 import random
 from hex_engine import hexPosition
-from submission.ppo_agent_facade import ppo_agent_logic # To use the PPO agent
+from submission.ppo_agent_facade import ppo_agent_logic, greedy_agent_logic  # To use the PPO agent
 
 # --- Configuration ---
 NUM_EVAL_GAMES = 100  # Number of games to play for evaluation
@@ -17,8 +18,9 @@ def random_agent(board, action_set):
     """A simple agent that picks a random valid move."""
     return random.choice(action_set)
 
+
 # --- Evaluation Function ---
-def evaluate_ppo_agent(num_games=NUM_EVAL_GAMES):
+def evaluate_ppo_agent(num_games=NUM_EVAL_GAMES, greedy=False):
     print(f"Starting evaluation of PPO agent against random agent for {num_games} games...")
 
     # Load the PPO agent (ppo_agent_logic will handle loading the model)
@@ -39,11 +41,11 @@ def evaluate_ppo_agent(num_games=NUM_EVAL_GAMES):
         if i % 2 == 0:
             player1 = ppo_agent_logic
             player1_name = "PPO Agent"
-            player2 = random_agent
-            player2_name = "Random Agent"
+            player2 = greedy_agent_logic if greedy else random_agent
+            player2_name = "Greedy Agent" if greedy else "Random Agent"
         else:
-            player1 = random_agent
-            player1_name = "Random Agent"
+            player1 = greedy_agent_logic if greedy else random_agent
+            player1_name = "Greedy Agent" if greedy else "Random Agent"
             player2 = ppo_agent_logic
             player2_name = "PPO Agent"
 
@@ -70,14 +72,14 @@ def evaluate_ppo_agent(num_games=NUM_EVAL_GAMES):
                 print(f"Game {i+1}: PPO Agent (White) won.")
             else:
                 random_wins += 1
-                print(f"Game {i+1}: Random Agent (White) won.")
+                print(f"Game {i+1}: OTHER agent (White) won.")
         elif game_engine.winner == -1: # Black won
             if player2 == ppo_agent_logic:
                 ppo_wins += 1
                 print(f"Game {i+1}: PPO Agent (Black) won.")
             else:
                 random_wins += 1
-                print(f"Game {i+1}: Random Agent (Black) won.")
+                print(f"Game {i+1}: OTHER agent (Black) won.")
         else: # Should not happen in Hex
             draws +=1
             print(f"Game {i+1}: Draw.")
@@ -85,7 +87,8 @@ def evaluate_ppo_agent(num_games=NUM_EVAL_GAMES):
     print("\n--- Evaluation Summary ---")
     print(f"Total games played: {num_games}")
     print(f"PPO Agent wins: {ppo_wins} ({ (ppo_wins/num_games)*100 :.2f}%)")
-    print(f"Random Agent wins: {random_wins} ({ (random_wins/num_games)*100 :.2f}%)")
+    agent = "Greedy Agent" if greedy else "Random Agent"
+    print(f"{agent} wins: {random_wins} ({ (random_wins/num_games)*100 :.2f}%)")
     if draws > 0:
         print(f"Draws: {draws} ({ (draws/num_games)*100 :.2f}%)")
 

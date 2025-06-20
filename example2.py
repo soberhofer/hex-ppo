@@ -11,13 +11,15 @@ game = engine.hexPosition()
 #'submission' is the (sub)package that you provide
 #please use a better name that identifies your group
 from submission.facade import agent
+from submission.facade import agent2
 
 #make sure that the agent you have provided is such that the following three
 #method-calls are error-free and as expected
 
 #let your agent play against random
-#game.human_vs_machine(human_player=1, machine=agent)
-game.machine_vs_machine(machine1=None, machine2=agent)
+if __name__ == '__main__':
+    #game.human_vs_machine(human_player=1, machine=agent)
+    game.machine_vs_machine(machine1=agent, machine2=agent2)
 
 #let your agent play against itself
 #game.machine_vs_machine(machine1=agent, machine2=agent)

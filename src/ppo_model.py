@@ -276,11 +276,11 @@ class ActorCritic(nn.Module):
         x = x.view(x.size(0), -1)  # Flatten all dimensions except batch
 
         # Actor
-        actor_hidden = F.relu(self.actor_fc1(x))
+        actor_hidden = F.leaky_relu(self.actor_fc1(x))
         action_logits = self.actor_fc2(actor_hidden)
 
         # Critic
-        critic_hidden = F.relu(self.critic_fc1(x))
+        critic_hidden = F.leaky_relu(self.critic_fc1(x))
         value = self.critic_fc2(critic_hidden)
 
         return action_logits, value
