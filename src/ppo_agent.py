@@ -5,26 +5,46 @@ from src.ppo_model import ActorCritic
 import numpy as np
 
 class PPOAgent:
-    def __init__(self, obs_shape, action_space_size, lr=3e-4, gamma=0.99, k_epochs=4, eps_clip=0.2, gae_lambda=0.95, device=torch.device("cpu")):
+    def __init__(self, obs_shape, action_space_size, lr=3e-4, gamma=0.99, k_epochs=4, eps_clip=0.2, gae_lambda=0.95, device=torch.device("cpu"), max_gradient_clip = 0.3, value_coef = 0.25, scaler: bool = False):
         self.gamma = gamma
         self.k_epochs = k_epochs
         self.eps_clip = eps_clip
         self.gae_lambda = gae_lambda
         self.device = device
+        self.use_mixed_precision = scaler
+        self.max_gradient_clip = max_gradient_clip
+        self.value_coef = value_coef
+        if self.use_mixed_precision:
+            self.scaler = torch.amp.GradScaler()
 
         self.policy = ActorCritic(obs_shape, action_space_size).to(device)
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+        self.optimizer = torch.optim.AdamW(
+                self.policy.parameters(),
+                lr=lr,
+                weight_decay=1e-4,  # l2 regularization, reduce overfitting
+                betas=(0.9, 0.999)  # control momentum (gradient average), reduce oszillation, control adaptive lrs
+            )
+
         self.policy_old = ActorCritic(obs_shape, action_space_size).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
 
         self.MseLoss = torch.nn.MSELoss()
 
-    def select_action(self, observation, valid_actions):
+    def select_action(self, observation, valid_actions, temperature):
         with torch.no_grad():
             # Add batch and channel dimensions, then move to device
-            obs_tensor = torch.FloatTensor(observation).unsqueeze(0).unsqueeze(1).to(self.device) 
-            action_logits, value = self.policy_old(obs_tensor)
-            
+            obs_tensor = torch.FloatTensor(observation).unsqueeze(0).unsqueeze(1).to(self.device)
+            #action_logits, value = self.policy_old(obs_tensor)
+
+            if self.use_mixed_precision:
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    action_logits, value = self.policy_old(obs_tensor)
+            else:
+                action_logits, value = self.policy_old(obs_tensor)
+
+
+
+
             # Mask invalid actions
             mask = torch.full(action_logits.shape, -float('inf'), device=self.device) # Move mask to device
             for action_scalar in valid_actions:
@@ -32,14 +52,32 @@ class PPOAgent:
             
             masked_action_logits = action_logits + mask
             
-            probs = torch.nn.functional.softmax(masked_action_logits, dim=-1)
+            probs = torch.nn.functional.softmax(masked_action_logits / temperature, dim=-1)
             dist = Categorical(probs)
             action = dist.sample()
             action_log_prob = dist.log_prob(action)
         
         return action.item(), action_log_prob.item(), value.item()
 
-    def update(self, memory):
+
+    def _evaluate_and_get_loss(self, old_states, old_actions, old_logprobs, advantages, returns, entropy_coef):
+        # Evaluate old actions and values
+        logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
+
+        # PPO clip objective
+        ratios = torch.exp(logprobs - old_logprobs.detach())
+
+        surr1 = ratios * advantages
+        surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
+
+        policy_loss = -torch.min(surr1, surr2).mean()
+        value_loss = self.MseLoss(state_values.squeeze(), returns.detach())
+
+        loss = policy_loss + self.value_coef * value_loss - entropy_coef * dist_entropy
+        return policy_loss, value_loss, dist_entropy, loss
+
+
+    def update(self, memory, entropy_coef, batch_size):
         # Convert lists to tensors, add channel dimension, and move to device
         old_states = torch.stack(memory.states).float().unsqueeze(1).to(self.device)
         old_actions = torch.stack(memory.actions).long().to(self.device)
@@ -48,36 +86,48 @@ class PPOAgent:
         old_is_terminals = torch.stack(memory.is_terminals).float().to(self.device)
         
         # Calculate advantages
-        advantages = self._calculate_advantages(old_rewards, old_is_terminals, old_states)
+        advantages, returns = self._calculate_advantages(old_rewards, old_is_terminals, old_states)
 
+        indices = torch.randperm(len(old_states))
         # Optimize policy for K epochs
-        for _ in range(self.k_epochs):
-            # Evaluate old actions and values
-            logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
+        for epoch in range(self.k_epochs):
+            #for start in range(0, len(old_states), batch_size):
 
-            # PPO clip objective
-            ratios = torch.exp(logprobs - old_logprobs.detach())
-            
-            surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
-            
-            policy_loss = -torch.min(surr1, surr2).mean()
-            value_loss = self.MseLoss(state_values.squeeze(), old_rewards) # Assuming old_rewards are already returns
+                #batch_idx = indices[start:start + batch_size]
 
-            loss = policy_loss + 0.5 * value_loss - 0.001 * dist_entropy # Reduced entropy bonus
+                #batch_states = old_states[batch_idx]
+                #batch_actions = old_actions[batch_idx]
+                #batch_logprobs = old_logprobs[batch_idx]
+                #batch_advantages = advantages[batch_idx]
+                #batch_returns = returns[batch_idx]
 
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5) # Gradient Clipping
-            self.optimizer.step()
+                if self.use_mixed_precision:
+                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                        policy_loss, value_loss, dist_entropy, loss = self._evaluate_and_get_loss(old_states, old_actions, old_logprobs, advantages, returns, entropy_coef)
+
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+
+                else:
+                    policy_loss, value_loss, dist_entropy, loss = self._evaluate_and_get_loss(old_states, old_actions,
+                                                                                              old_logprobs, advantages,
+                                                                                              returns, entropy_coef)
+
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.max_gradient_clip) # Gradient Clipping
+                    self.optimizer.step()
         
         # Copy new weights into old policy
         self.policy_old.load_state_dict(self.policy.state_dict())
 
-        return policy_loss.item(), value_loss.item(), dist_entropy.item()
+        return policy_loss.item(), value_loss.item(), dist_entropy.item(), loss
 
     def _calculate_advantages(self, rewards, is_terminals, states):
-        # Calculate discounted rewards (returns)
+        # Calculate discounted returns (for value targets)
         returns = []
         discounted_reward = 0
         for reward, is_terminal in zip(reversed(rewards), reversed(is_terminals)):
@@ -85,26 +135,38 @@ class PPOAgent:
                 discounted_reward = 0
             discounted_reward = reward + (self.gamma * discounted_reward)
             returns.insert(0, discounted_reward)
-        
-        returns = torch.tensor(returns, dtype=torch.float32, device=self.device) # Move returns to device
+        returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
 
-        # Calculate advantages using GAE
+        # Get values from old policy (value estimates)
         with torch.no_grad():
-            values = self.policy_old(states)[1].squeeze() # Get values from the old policy
-        
-        advantages = returns - values
+            values = self.policy_old(states)[1].squeeze()
+
+        # Append an extra value for the last state (bootstrap value)
+        values = torch.cat([values, torch.tensor([0.0], device=self.device)])
+
+        advantages = []
+        gae = 0
+        for step in reversed(range(len(rewards))):
+            mask = 1.0 - is_terminals[step].item()
+            delta = rewards[step] + self.gamma * values[step + 1] * mask - values[step]
+            gae = delta + self.gamma * self.gae_lambda * mask * gae
+            advantages.insert(0, gae)
+
+        advantages = torch.tensor(advantages, dtype=torch.float32, device=self.device)
         # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
-        
-        return advantages
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        return advantages, returns
+
 
 class RolloutMemory:
-    def __init__(self):
+    def __init__(self, device):
         self.states = []
         self.actions = []
         self.logprobs = []
         self.rewards = []
         self.is_terminals = []
+        self.device = device
 
     def clear_memory(self):
         del self.states[:]
@@ -115,8 +177,8 @@ class RolloutMemory:
 
     def add(self, state, action, log_prob, reward, is_terminal):
         # Store tensors on CPU, move to device during update
-        self.states.append(torch.tensor(state, dtype=torch.float32))
-        self.actions.append(torch.tensor(action))
-        self.logprobs.append(torch.tensor(log_prob))
-        self.rewards.append(torch.tensor(reward, dtype=torch.float32))
-        self.is_terminals.append(torch.tensor(is_terminal, dtype=torch.bool))
+        self.states.append(torch.tensor(state, dtype=torch.float32, device=self.device))
+        self.actions.append(torch.tensor(action, device=self.device))
+        self.logprobs.append(torch.tensor(log_prob, device=self.device))
+        self.rewards.append(torch.tensor(reward, dtype=torch.float32, device=self.device))
+        self.is_terminals.append(torch.tensor(is_terminal, dtype=torch.bool, device=self.device))
