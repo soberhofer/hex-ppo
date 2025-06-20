@@ -146,7 +146,7 @@ class HexEnv(gym.Env):
 
     def get_final_reward(self, original_player):
         if WITH_REWARD_SHAPING:
-            base = MAX_REWARD*2 if self.hex_game.winner == original_player else -MAX_REWARD
+            base = MAX_REWARD if self.hex_game.winner == original_player else -MAX_REWARD
         else:
             base = MAX_REWARD if self.hex_game.winner == original_player else -MAX_REWARD
         #print("BASE REWARD: ", base)
