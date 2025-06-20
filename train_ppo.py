@@ -8,6 +8,7 @@ import numpy as np
 import os
 import random # For random agent in evaluation and mixed training
 import copy
+import wandb
 
 # Hyperparameters
 TEMPERATURE = 1.3
@@ -176,9 +177,13 @@ def ppo_action_from_policy(board, valid_actions: list, policy_net: torch.nn.Modu
         return action_coords
 
 
-def save_model(agent, num_updates, win_rate, specific_agent = ""):
+def save_model(agent, num_updates, win_rate, specific_agent = "", wandb_logging_enabled=False):
     model_path = os.path.join(MODEL_DIR, f"ppo_hex_agent_update_{num_updates}{specific_agent}_{win_rate}.pth")
     torch.save(agent.state_dict(), model_path)
+    if wandb_logging_enabled:
+        artifact = wandb.Artifact(f'model-{num_updates}', type='model')
+        artifact.add_file(model_path)
+        wandb.log_artifact(artifact)
     #print(f"Model saved to {model_path}")
 
 best_results_for_each_agent = {}
@@ -199,7 +204,7 @@ def update_best_agent_stats(win_rate: float, timesteps_collected: int, current_a
         best_results_for_each_agent[agent_key]["updates"] += 1
         save_model(agent.policy, timesteps_collected, win_rate, best_results_for_each_agent[agent_key]["agent"])
 
-def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_games=100):
+def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_games=100, wandb_logging_enabled=False):
     """
     Evaluate against num_games random games and num_games x agents in frozen_agents games against frozen agents
     """
@@ -361,9 +366,21 @@ def evaluate_mixed(agent, device, env: HexEnv, time_steps_collected: int, num_ga
 
     moving_avg = np.mean(evaluate_mixed.win_history)
     print(f"3-Eval Moving Avg: {moving_avg:.2f}")
+    if wandb_logging_enabled:
+        wandb.log({
+            "eval/random_win_rate": stats[Opponents.RANDOM]['win_rate'],
+            "eval/greedy_win_rate": stats[Opponents.GREEDY]['win_rate'],
+            "eval/self_win_rate": stats[Opponents.SELF]['win_rate'],
+            "eval/frozen_win_rate": frozen_normalized,
+            "eval/weighted_win_rate": current_win_rate,
+            "eval/unweighted_win_rate": current_win_rate_unweighted,
+            "eval/moving_avg_win_rate": moving_avg,
+            "timesteps": time_steps_collected
+        })
+
     if current_win_rate >= overall_best[-1][1]:
         overall_best[-1] = (time_steps_collected, current_win_rate)
-        save_model(agent.policy, time_steps_collected, overall_best[-1][1], "_overall")
+        save_model(agent.policy, time_steps_collected, overall_best[-1][1], "_overall", wandb_logging_enabled)
         freeze_agent_and_reset_policy(agent, env, device, time_steps_collected)
 
     print("--- Evaluation Finished ---\n")
@@ -528,6 +545,40 @@ def get_ratios(mvg_average: float, current_win_rate: float):
     return rand_val, random_ratio, greedy_ratio, frozen_ratio, self_ratio
 
 def train(with_periodic_self: bool = True, with_random: bool = True):
+    wandb_logging_enabled = False
+    if os.getenv('WANDB_API_KEY'):
+        wandb_logging_enabled = True
+        wandb.init(
+            project="hex-ppo",
+            config={
+                "temperature": TEMPERATURE,
+                "final_temperature": FINAL_TEMPERATURE,
+                "hex_board_size": HEX_BOARD_SIZE,
+                "initial_learning_rate": INITIAL_LEARNING_RATE,
+                "gamma": GAMMA,
+                "k_epochs": K_EPOCHS,
+                "eps_clip": EPS_CLIP,
+                "gae_lambda": GAE_LAMBDA,
+                "entropy_coef_initial": ENTROPY_COEF_INITIAL,
+                "entropy_coef_final": ENTROPY_COEF_FINAL,
+                "max_clipping": MAX_CLIPPING,
+                "value_coef": VALUE_COEF,
+                "max_patience": MAX_PATIENCE,
+                "max_len_frozen_agents": MAX_LEN_FROZEN_AGENTS,
+                "max_total_timesteps": MAX_TOTAL_TIMESTEPS,
+                "timesteps_per_batch": TIMESTEPS_PER_BATCH,
+                "updates_per_eval": UPDATES_PER_EVAL,
+                "updates_per_save": UPDATES_PER_SAVE,
+                "warmup_epochs": WARMUP_EPOCHS,
+                "random_opponent_ratio_easy": RANDOM_OPPONENT_RATIO_EASY,
+                "random_opponent_ratio_medium": RANDOM_OPPONENT_RATIO_MEDIUM,
+                "random_opponent_ratio_hard": RANDOM_OPPONENT_RATIO_HARD,
+                "greedy_opponent_ratio_easy": GREEDY_OPPONENT_RATIO_EASY,
+                "greedy_opponent_ratio_medium": GREEDY_OPPONENT_RATIO_MEDIUM,
+                "greedy_opponent_ratio_hard": GREEDY_OPPONENT_RATIO_HARD,
+            }
+        )
+
     device = get_device()
     env = HexEnv(size=HEX_BOARD_SIZE)
     obs_shape = env.observation_space.shape
@@ -726,6 +777,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
             if num_updates % 1 == 0:
                 current_lr = agent.optimizer.param_groups[0]['lr']
                 avg_ep_reward_str = ""
+                avg_recent_ep_reward = 0
                 if len(all_episode_rewards) > 0:
                     lookback_episodes = min(AVG_REWARD_WINDOW, len(all_episode_rewards))
                     avg_recent_ep_reward = np.mean(all_episode_rewards)
@@ -738,29 +790,42 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
                     avg_length = episode_length_sum / episode_count
 
                     # using the precalculated ratios might not give a full picture but suffices for now
-                    greedy = round(episode_wins[Opponents.GREEDY]/opponent_counts_per_eval_loop[Opponents.GREEDY], 2)
-                    random_agent = round(episode_wins[Opponents.RANDOM]/opponent_counts_per_eval_loop[Opponents.RANDOM], 2)
-                    frozen = round(episode_wins[Opponents.FROZEN_SELF]/opponent_counts_per_eval_loop[Opponents.FROZEN_SELF], 2)
-                    self = round(episode_wins[Opponents.SELF]/opponent_counts_per_eval_loop[Opponents.SELF], 2)
+                    greedy = round(episode_wins[Opponents.GREEDY]/opponent_counts_per_eval_loop[Opponents.GREEDY], 2) if opponent_counts_per_eval_loop[Opponents.GREEDY] > 0 else 0
+                    random_agent = round(episode_wins[Opponents.RANDOM]/opponent_counts_per_eval_loop[Opponents.RANDOM], 2) if opponent_counts_per_eval_loop[Opponents.RANDOM] > 0 else 0
+                    frozen = round(episode_wins[Opponents.FROZEN_SELF]/opponent_counts_per_eval_loop[Opponents.FROZEN_SELF], 2) if opponent_counts_per_eval_loop[Opponents.FROZEN_SELF] > 0 else 0
+                    self_play = round(episode_wins[Opponents.SELF]/opponent_counts_per_eval_loop[Opponents.SELF], 2) if opponent_counts_per_eval_loop[Opponents.SELF] > 0 else 0
+
 
                     print(f"  "   
                           f"random {random_agent} * {round(random_ratio, 2)} "
-                          f"| self {self} * {round(self_ratio, 2)}"
+                          f"| self {self_play} * {round(self_ratio, 2)}"
                           f"| frozen {frozen} * {round(frozen_ratio, 2)} "
                           f"| greedy {greedy} * {round(greedy_ratio, 2)} "
                           )
 
-                    win_rate = (greedy * round(greedy_ratio, 2) + random_agent * round(random_ratio, 2) + frozen * round(frozen_ratio, 2) + self * round(self_ratio, 2))*100
+                    win_rate = (greedy * round(greedy_ratio, 2) + random_agent * round(random_ratio, 2) + frozen * round(frozen_ratio, 2) + self_play * round(self_ratio, 2))*100
 
                     print(f"  Episodes Played: {episode_count}, "
                           # f"Complete Training Avg Reward: {avg_reward:.2f}, "
                           f"Training Avg Length: {avg_length:.1f}, Weighted Training Win Rate: {win_rate:.1f}%")
-                    """print(f"  Wins/Trained Ratio per agent: "
-                        f"random {episode_wins[Opponents.RANDOM]} | {random_ratio}, "
-                        f"self {episode_wins[Opponents.SELF]} | {self_ratio}, "
-                        f"frozen self {episode_wins[Opponents.FROZEN_SELF]} | {frozen_ratio} "
-                        f"greedy {episode_wins[Opponents.GREEDY]} | {greedy_ratio}, "
-                    )"""
+                    
+                    if wandb_logging_enabled:
+                        wandb.log({
+                            "train/policy_loss": p_loss,
+                            "train/value_loss": v_loss,
+                            "train/entropy": ent,
+                            "train/learning_rate": current_lr,
+                            "train/avg_episode_reward": avg_recent_ep_reward,
+                            "train/avg_episode_length": avg_length,
+                            "train/weighted_win_rate": win_rate,
+                            "train/win_rate_vs_random": random_agent,
+                            "train/win_rate_vs_greedy": greedy,
+                            "train/win_rate_vs_frozen": frozen,
+                            "train/win_rate_vs_self": self_play,
+                            "timesteps": total_timesteps_collected,
+                            "update": num_updates
+                        })
+
                     print("  Played opponents: ", opponent_counts_per_eval_loop)
                     for key, _ in opponent_counts_per_eval_loop.items():
                         opponent_counts_per_eval_loop[key] = 0
@@ -777,7 +842,7 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
             # --- periodic evaluation
             if num_updates > 0 and num_updates % UPDATES_PER_EVAL == 0:
 
-                current_win_rate, moving_avg, stats = evaluate_mixed(agent, device, env, num_updates)
+                current_win_rate, moving_avg, stats = evaluate_mixed(agent, device, env, num_updates, 100, wandb_logging_enabled)
                 for key, _ in opponent_counts.items():
                     opponent_counts[key] = 0
                 if moving_avg > best_moving_avg + 0.02:  # win rate avg got better
@@ -800,7 +865,9 @@ def train(with_periodic_self: bool = True, with_random: bool = True):
         if total_timesteps_collected >= MAX_TOTAL_TIMESTEPS:
             break
 
-    save_model(agent.policy, num_updates, "", "last_save")
+    save_model(agent.policy, num_updates, "", "last_save", wandb_logging_enabled)
+    if wandb_logging_enabled:
+        wandb.finish()
     env.close()
     for key, item in best_results_for_each_agent.items():
         print(f"{key} Best: {item}")
