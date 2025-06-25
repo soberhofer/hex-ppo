@@ -15,4 +15,4 @@ def agent2 (board, action_set):
     This function serves as the entry point for your trained PPO agent.
     It calls the ppo_agent_logic from ppo_agent_facade to select an action.
     """
-    return ppo_agent_logic(board, action_set, "./models/ppo_hex_agent_update_best_so_far.pth")
+    return ppo_agent_logic(board, action_set, "./Group_G/agent/ppo_voodoo_agent.pth")

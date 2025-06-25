@@ -19,7 +19,7 @@ from submission.facade import agent2
 #let your agent play against random
 if __name__ == '__main__':
     #game.human_vs_machine(human_player=1, machine=agent)
-    game.machine_vs_machine(machine1=agent, machine2=agent2)
+    (game.machine_vs_machine(machine1=agent2, machine2=agent))
 
 #let your agent play against itself
 #game.machine_vs_machine(machine1=agent, machine2=agent)

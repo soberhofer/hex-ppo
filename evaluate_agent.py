@@ -1,6 +1,3 @@
-import numpy as np
-import torch
-import os
 import random
 from hex_engine import hexPosition
 from submission.ppo_agent_facade import ppo_agent_logic, greedy_agent_logic  # To use the PPO agent
@@ -41,11 +38,15 @@ def evaluate_ppo_agent(num_games=NUM_EVAL_GAMES, greedy=False):
         if i % 2 == 0:
             player1 = ppo_agent_logic
             player1_name = "PPO Agent"
+            #player2 = select_action
             player2 = greedy_agent_logic if greedy else random_agent
+            #player2_name = "Somewhat strategic"
             player2_name = "Greedy Agent" if greedy else "Random Agent"
         else:
             player1 = greedy_agent_logic if greedy else random_agent
+            #player1 = select_action
             player1_name = "Greedy Agent" if greedy else "Random Agent"
+            #player1_name = "Somewhat strategic"
             player2 = ppo_agent_logic
             player2_name = "PPO Agent"
 
@@ -95,4 +96,4 @@ def evaluate_ppo_agent(num_games=NUM_EVAL_GAMES, greedy=False):
 if __name__ == '__main__':
     # Ensure the ppo_agent_logic can find the model
     # It automatically loads the latest from MODEL_DIR
-    evaluate_ppo_agent()
+    evaluate_ppo_agent(greedy=True)

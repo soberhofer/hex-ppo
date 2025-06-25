@@ -316,7 +316,7 @@ class hexPosition (object):
         self.reset()
         while self.winner == 0:
             self.print()
-            input("Press ENTER to continue.")
+            #input("Press ENTER to continue.")
             if self.player == 1:
                 chosen = machine1(self.board, self.get_action_space())
             if self.player == -1:

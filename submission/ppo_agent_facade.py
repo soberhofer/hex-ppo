@@ -5,10 +5,13 @@ from hex_engine import hexPosition # For scalar_to_coordinates
 from src.ppo_model import ActorCritic # Assuming src is in PYTHONPATH or accessible
 from torch.distributions import Categorical # Import Categorical
 
+#from train_ppo import HexStrategicAgent
+
 # Define the board size (must match the size used during training)
 HEX_BOARD_SIZE = 7 
-MODEL_DIR = "models" # Directory where models are saved
-MODEL_PATH = 'ppo_hex_agent_update_320_overall_0.58.pth' # specific model
+MODEL_DIR = "Group_G" # Directory where models are saved
+SUB_DIR = "agent"
+MODEL_PATH = "ppo_voodoo_agent.pth"
 
 # Global variable to hold the loaded model
 _ppo_model = None
@@ -30,7 +33,7 @@ def load_ppo_model(model_path):
         print(f"PPO model loaded from {model_path}")
     return _ppo_model
 
-def ppo_agent_logic(board, action_set, path= os.path.join(".", MODEL_DIR, MODEL_PATH)):
+def ppo_agent_logic(board, action_set, path= os.path.join(".", MODEL_DIR, SUB_DIR, MODEL_PATH)):
     """
     The logic for the PPO agent to select an action.
     This function will be called by the hex_engine.
@@ -106,3 +109,35 @@ def greedy_agent_logic(board, action_set, path= os.path.join(".", MODEL_DIR, MOD
     chosen_coordinates = hexPosition(HEX_BOARD_SIZE).scalar_to_coordinates(best_action_index)
 
     return chosen_coordinates
+
+
+# TODO: adapt other agents with player id so that it can be used
+"""
+def select_action(board_state, actions, player_id):
+    '''
+    Determines the "best" legal move using a simple heuristic evaluation.
+
+    board_state: the board state (2D array or similar structure),
+                 0 for empty, 1 for player 1, 2 for player 2 (or adapt as needed).
+    player_id:   the agent's ID (1 or 2).
+
+    Returns: (row, col) as the chosen move.
+    '''
+
+    agent = HexStrategicAgent(7)
+    legal_moves = agent.get_legal_moves(board_state)
+    if not legal_moves:
+        return None  # No legal moves available
+
+    best_move = None
+    best_score = float('-inf')
+
+    for move in legal_moves:
+        sim_board = agent.simulate_move(board_state, move, player_id)
+        score = agent.evaluate_position(sim_board, player_id)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+"""
