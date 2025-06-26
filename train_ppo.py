@@ -675,7 +675,10 @@ def set_opponent_policy(opponent_type, env, frozen_agent, device, num_updates, a
 
 def train(with_random, with_greedy, with_frozen, setting, player):
     wandb_logging_enabled = False
-    secrets.set_key()
+    try:
+        secrets.set_key()
+    except:
+        print("No secrets file found.")
     if os.getenv('WANDB_API_KEY'):
         print("WAND logging enabled")
         wandb_logging_enabled = True
