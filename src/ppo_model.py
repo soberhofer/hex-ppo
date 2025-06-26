@@ -239,9 +239,9 @@ class ActorCritic(nn.Module):
 
         # Convolutional layers for feature extraction
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
+        self.bn1 = nn.BatchNorm2d(32) # for regularization
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
+        self.bn2 = nn.BatchNorm2d(64) # for regularization
 
         # 1x1 Convolution for the residual connection to match channel dimensions
         self.residual_projection = nn.Conv2d(1, 64, kernel_size=1, stride=1, padding=0)

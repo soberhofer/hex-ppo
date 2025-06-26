@@ -6,9 +6,9 @@ from gymnasium import spaces
 import numpy as np
 from hex_engine import hexPosition
 
-WITH_REWARD_SHAPING = False # set to false if no reward shaping wanted
-#WITH_MOVE_PENALTY = False
-WITH_MOVE_PENALTY = True # Test
+WITH_REWARD_SHAPING = False # set to false if no reward shaping wanted set in submission agent
+#WITH_MOVE_PENALTY = True
+WITH_MOVE_PENALTY = True # set in submission agent
 if WITH_REWARD_SHAPING:
     MAX_REWARD = 2.0 # better difference between winning with reward shaping and having good moves, but still losing
 else:
@@ -57,6 +57,9 @@ class HexEnv(gym.Env):
 
 
     def _calculate_bridge_reward(self, coordinates, player):
+        '''
+        Determine bridge reward w. r. t. strategic advantage and bridge validity
+        '''
         reward = 0
         player_stones = self._get_player_stones(player)
 
@@ -262,7 +265,7 @@ class HexEnv(gym.Env):
 
     def get_final_reward(self, original_player):
         if WITH_REWARD_SHAPING:
-            base = MAX_REWARD if self.hex_game.winner == original_player else -MAX_REWARD*2
+            base = MAX_REWARD if self.hex_game.winner == original_player else -MAX_REWARD
         else:
             base = MAX_REWARD if self.hex_game.winner == original_player else -MAX_REWARD
         #print("BASE REWARD: ", base)
@@ -273,9 +276,9 @@ class HexEnv(gym.Env):
     def _calculate_strategic_rewards(self, coordinates, player):
         """Weighted rewards"""
         rewards = {
-            'bridge': self._calculate_bridge_reward(coordinates, player) * 1.0,
-            'chain': self._calculate_chain_reward(coordinates, player) * 2.0,
-            'connectivity': self._reward_connection_progress(coordinates, player) * 1.0,
+            'bridge': self._calculate_bridge_reward(coordinates, player) * 0.3,
+            'chain': self._calculate_chain_reward(coordinates, player) * 0.2,
+            'connectivity': self._reward_connection_progress(coordinates, player) * 0.4,
         }
         return sum(rewards.values())
 
@@ -425,6 +428,9 @@ class HexEnv(gym.Env):
         return bonus
 
     def _calculate_opponent_chain_length(self, start_coord, opponent):
+        '''
+        get the opponents chain length to evaluate strategic advantage of own move
+        '''
         visited = set()
         queue = [start_coord]
         chain_length = 0
@@ -443,6 +449,9 @@ class HexEnv(gym.Env):
         return chain_length
 
     def _reward_blocking_potential_connection(self, coords, player):
+        '''
+        add reward if this could block opponent connection
+        '''
         opponent = -player
         reward = 0
 
@@ -460,6 +469,9 @@ class HexEnv(gym.Env):
         return min(reward, 0.6)
 
     def _reward_opponent_blocking(self, coords, player):
+        '''
+        add reward if this chain blocks an opponent
+        '''
         opponent = -player
         blocking_large_chains = 0
 
@@ -517,9 +529,6 @@ class HexEnv(gym.Env):
             #print("Original player is ", original_player)
             final_reward = self.get_final_reward(original_player)
             #print("FINAL REWARD IS: ", final_reward)
-            observation = self._get_obs()
-            info = self._get_info()
-            # return observation, final_reward, terminated, truncated, info
 
 
         # if there is an opponent policy defined and its the opponents turn
@@ -540,9 +549,6 @@ class HexEnv(gym.Env):
                 #print("Original player is ", original_player)
                 final_reward = self.get_final_reward(original_player)
                 #print("FINAL REWARD IS: ", final_reward)
-                observation = self._get_obs()
-                info = self._get_info()
-                #return observation, final_reward, terminated, truncated, info
 
         # strategic rewards should be less important at the end of the game test
         #progress = self.hex_game.move_count / (self.size**2)

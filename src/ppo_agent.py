@@ -42,9 +42,6 @@ class PPOAgent:
             else:
                 action_logits, value = self.policy_old(obs_tensor)
 
-
-
-
             # Mask invalid actions
             mask = torch.full(action_logits.shape, -float('inf'), device=self.device) # Move mask to device
             for action_scalar in valid_actions:
@@ -88,19 +85,8 @@ class PPOAgent:
         # Calculate advantages
         advantages, returns = self._calculate_advantages(old_rewards, old_is_terminals, old_states)
 
-        indices = torch.randperm(len(old_states))
         # Optimize policy for K epochs
         for epoch in range(self.k_epochs):
-            #for start in range(0, len(old_states), batch_size):
-
-                #batch_idx = indices[start:start + batch_size]
-
-                #batch_states = old_states[batch_idx]
-                #batch_actions = old_actions[batch_idx]
-                #batch_logprobs = old_logprobs[batch_idx]
-                #batch_advantages = advantages[batch_idx]
-                #batch_returns = returns[batch_idx]
-
                 if self.use_mixed_precision:
                     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                         policy_loss, value_loss, dist_entropy, loss = self._evaluate_and_get_loss(old_states, old_actions, old_logprobs, advantages, returns, entropy_coef)
@@ -127,7 +113,7 @@ class PPOAgent:
         return policy_loss.item(), value_loss.item(), dist_entropy.item(), loss
 
     def _calculate_advantages(self, rewards, is_terminals, states):
-        # Calculate discounted returns (for value targets)
+        # Calculate discounted returns (for value targets) using gamma and applying gae bias
         returns = []
         discounted_reward = 0
         for reward, is_terminal in zip(reversed(rewards), reversed(is_terminals)):
