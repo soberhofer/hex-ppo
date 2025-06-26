@@ -2,6 +2,7 @@ from shutil import chown
 
 import torch
 
+import secrets
 from src import hex_env
 from src.hex_env import HexEnv
 from src.ppo_agent import PPOAgent, RolloutMemory
@@ -674,8 +675,8 @@ def set_opponent_policy(opponent_type, env, frozen_agent, device, num_updates, a
 
 def train(with_random, with_greedy, with_frozen, setting, player):
     wandb_logging_enabled = False
-    #os.environ['WANDB_API_KEY'] = 'd2e9efe5d96ec0f303f30ee7a38daca9ef47cf97'
-    """if os.getenv('WANDB_API_KEY'):
+    secrets.set_key()
+    if os.getenv('WANDB_API_KEY'):
         print("WAND logging enabled")
         wandb_logging_enabled = True
         wandb.init(
@@ -711,7 +712,7 @@ def train(with_random, with_greedy, with_frozen, setting, player):
                 "with_frozen": with_frozen,
                 "with_random": with_random,
             }
-        )"""
+        )
 
     # reset path to align saved models folder with settings path
     global MODEL_DIR, BEST_MODEL_PATH

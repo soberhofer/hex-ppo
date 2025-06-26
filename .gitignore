@@ -17,6 +17,7 @@ models.zip
 models_more.zip
 wandb
 Group_G.zip
+secrets.py
 
 # IDEs
 .vscode/
